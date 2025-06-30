@@ -1,8 +1,12 @@
-~/master/3rd/iss/code/future/ISS/common/tool/mibcompiler/MIBCOMPILER$ ./mibcompiler OpticsIMSpIetfMauMibMc140731.mib 
+root@labuser-HP-Z2-Tower-G9-Workstation-Desktop-PC:/home/labuser/bharath2/code/future/ISS/common/tool/mibcompiler/MIBCOMPILER#
+ ./mibcompiler OpticsIMSpIetfMauMibMc140731.mib
+
 Parsing OpticsIMSpIetfMauMibMc140731.mib...
 OpticsIMSpIetfMauMibMc140731.mib(line 19): syntax error
-Last token read OBJECT
+Last token read mib-2
 Locating error in input file...
+
  Error While Compiling with v2comp tool....
+
 
 mib-2 OBJECT IDENTIFIER ::= { iso(1) org(3) dod(6) internet(1) mgmt(2) 1 }
