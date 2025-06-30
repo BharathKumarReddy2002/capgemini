@@ -2,11 +2,12 @@ root@labuser-HP-Z2-Tower-G9-Workstation-Desktop-PC:/home/labuser/bharath2/code/f
  ./mibcompiler OpticsIMSpIetfMauMibMc140731.mib
 
 Parsing OpticsIMSpIetfMauMibMc140731.mib...
-OpticsIMSpIetfMauMibMc140731.mib(line 19): syntax error
-Last token read mib-2
+OpticsIMSpIetfMauMibMc140731.mib(line 21): syntax error
+Last token read OBJECT
 Locating error in input file...
 
  Error While Compiling with v2comp tool....
+
 
 
 mib-2 OBJECT IDENTIFIER ::= { iso(1) org(3) dod(6) internet(1) mgmt(2) 1 }
