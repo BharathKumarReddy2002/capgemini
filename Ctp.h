@@ -45,6 +45,93 @@ listening on eth4, link-type EN10MB (Ethernet), snapshot length 262144 bytes
 19:44:44.496224 IP ctp_141.51443 > 10.216.118.96.snmp-trap:  F= U="user1" E=_80_00_1f_88_80_1f_da_93_32_aa_7f_f7_69_00_00_00_00 C="" V2Trap(141)  system.sysUpTime.0=1015795 S:1.1.4.1.0=E:18841.1.2.1.6.0.11 E:18841.1.2.1.5.11="LOS  00 00 00 00 00 00 00 LOF 00 00 00 00 00 00 00  BD:, PD: "
 
 
+The Solution: Update ctp_trans_trap in ctpd.c
+Locate the ctp_trans_trap function (found around line 23908) and replace the entire function with the code below.
 
+    //-------------------------------------------------------------------------
+// This function sends a trap
+//-------------------------------------------------------------------------
+int ctp_trans_trap(void)
+{
+  int i, j, status = SUCCESS;
+  FILE *fp;
+  FUNC_PRT(ctp_trans_trap, PF_TRAP, 0);
+
+  if( snmpTrapBufPtrTail != snmpTrapBufPtrHead ) {
+    snmpTrapBufPtrTail++;
+    snmpTrapBufPtrTail %= SNMP_TRAP_BUF_RING_SIZE;
+    PRTDV(GEN,Processing snmpTrapBufPtrTail,snmpTrapBufPtrTail);
+
+    for(i=0;i<CTP_MAX_TRAP_HOSTS;i++) {
+      if( strcmp(Ctp.Snmp.TrapHost[i],"none") != 0 ) {
+        
+        // --- Logic Change: Only send v2c if v3 is NOT configured ---
+        // This prevents the redundant v2c traps you saw in tcpdump
+        if ((is_v2 != 0) && (Ctp.Snmp.TrapType != 3)) {
+#ifdef WRL
+          sprintf( snmpTrapCmdBuf,
+              "/usr/bin/snmptrap -v 2c -c %s %s \'\' %s",
+              Ctp.Snmp.TrapComm,
+              Ctp.Snmp.TrapHost[i],
+              &snmpTrapBuf[snmpTrapBufPtrTail][0]);
+#else
+          sprintf( snmpTrapCmdBuf, 
+              "/usr/local/bin/snmptrap -v 2c -c %s %s \'\' %s",
+              Ctp.Snmp.TrapComm, 
+              Ctp.Snmp.TrapHost[i], 
+              &snmpTrapBuf[snmpTrapBufPtrTail][0]);
+#endif
+          PRTS(EVE,Sent node trap (v2c), snmpTrapCmdBuf);
+#ifdef WRL
+          fp = popen(snmpTrapCmdBuf, "r");
+          if(!fp){
+            PRTS(EVE, Could not open pipe for output, snmpTrapCmdBuf);
+            status = FAILURE;
+          } else { pclose(fp); }
+#else
+          if( acorn_system(snmpTrapCmdBuf) ) { status = FAILURE; }
+#endif
+        }
+
+        // --- UPDATED SNMPv3 LOGIC (Encrypted) ---
+        if (Ctp.Snmp.TrapType == 3) {
+           for(j=0;j<CTP_MAX_TRAP_HOSTS;j++) {
+              if( strcmp(Ctp.Snmp.TrapUser[j],"none") != 0 ) {
+#ifdef WRL
+                  // UPDATED: Added -l authPriv and -X flag with TrapPrivPass[j]
+                  sprintf( snmpTrapCmdBuf,
+                      "/usr/bin/snmptrap -e %s -v 3 -u %s -l authPriv -a SHA -A \"%s\" -x AES -X \"%s\" %s \'\' %s",
+                      Ctp.Snmp.TrapEngine, Ctp.Snmp.TrapUser[j],
+                      Ctp.Snmp.TrapPass[j], Ctp.Snmp.TrapPrivPass[j], Ctp.Snmp.TrapHost[i],
+                      &snmpTrapBuf[snmpTrapBufPtrTail][0]);
+                  PRTS(EVE,Sent node trap (v3-Encrypted), snmpTrapCmdBuf);
+
+                  fp = popen(snmpTrapCmdBuf, "r");
+                  if(!fp){
+                    PRTS(EVE, Could not open pipe for output, snmpTrapCmdBuf);
+                    status = FAILURE;
+                  } else { pclose(fp); }
+#else
+                  sprintf( snmpTrapCmdBuf,
+                      "/usr/local/bin/snmptrap -e %s -v 3 -u %s -l authPriv -a SHA -A \"%s\" -x AES -X \"%s\" %s \'\' %s",
+                      Ctp.Snmp.TrapEngine, Ctp.Snmp.TrapUser[j],
+                      Ctp.Snmp.TrapPass[j], Ctp.Snmp.TrapPrivPass[j], Ctp.Snmp.TrapHost[i],
+                      &snmpTrapBuf[snmpTrapBufPtrTail][0]);
+                  PRTS(EVE,Sent node trap (v3-Encrypted), snmpTrapCmdBuf);
+
+                  if( acorn_system(snmpTrapCmdBuf) ) {
+                    PRT(MAJ,send_trap: system call failed.);
+                    status = FAILURE;
+                  }
+#endif
+              }
+           }
+        }
+      } else { break; } // hit a "none", so stop
+    }
+    memset(&snmpTrapBuf[snmpTrapBufPtrTail][0], 0, SNMP_TRAP_BUF_SIZE);
+  }
+  return status;
+}
 
     
