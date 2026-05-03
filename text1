@@ -1,0 +1,347 @@
+trap_clock.pl
+
+#!/usr/bin/perl -W
+
+use IPC::SysV qw(S_IRWXU IPC_CREAT IPC_NOWAIT SEM_UNDO);
+use IPC::Semaphore;
+use Digest::SHA qw(sha1_hex);
+
+#------------------------------------------------------------
+# Global variables
+#------------------------------------------------------------
+my $MAX_SNMP_USERS = 8;
+my $index = 1;
+my $trap_comm;
+my $trap_engine;
+my $system_clk;
+my @trap_hosts;
+my @trap_user;
+my @trap_pass;
+my $user_string="none";
+my $GREP="/bin/grep";
+my $WC="/usr/bin/wc";
+my $AWK="/usr/bin/awk";
+my $DATE = "/bin/date";
+my $SNMPD_CONF = "/etc/snmp/snmpd.conf";
+my $VAR_SNMP_FILE = "/var/lib/net-snmp/snmpd.conf";
+my $LOG_KEY = 1222222224;
+my $LOG_SEM = new IPC::Semaphore($LOG_KEY, 1, S_IRWXU | IPC_CREAT);$LOG_LEVEL = 3;
+my $LOG_FILE = "/var/log/messages";
+my $MAX_PING_TRIES = 3;
+my $YES = 1; my $NO = 0;
+my $CACHE_FILE = "/root/snmp_config.cache";
+
+# These will now be populated from cache or calculation
+my $IS_V3 = 0;
+my $IS_V2 = 0;
+
+# Fetch trap enable status
+my $IS_TRAP = `$GREP "trapcommunity" $SNMPD_CONF | $GREP -v "#" | $WC -l | $AWK '{print \$1}'`;
+chomp($IS_TRAP);
+
+# EARLY RETURN if SNMP traps are not enabled
+if ($IS_TRAP == 0) {
+    exit 0;
+}
+
+#PR-1846896 Start
+sub read_file_contents {
+    my ($file) = @_;
+    open my $fh, '<', $file or return undef;
+    local $/ = undef;
+    my $content = <$fh>;
+    close $fh;
+    return $content;
+}
+
+sub write_file_contents {
+    my ($file, $data) = @_;
+    open my $fh, '>', $file or die "Cannot write $file: $!";
+    print $fh $data;
+    close $fh;
+}
+
+sub compute_config_checksum {
+    my $snmpd_conf = read_file_contents($SNMPD_CONF) // '';
+    my $var_snmp = read_file_contents($VAR_SNMP_FILE) // '';
+    return sha1_hex($snmpd_conf . $var_snmp );
+    #return sha1_hex($snmpd_conf . $var_snmp . $syscfg_output);
+}
+
+sub load_snmp_config_once {
+    my $checksum = compute_config_checksum();
+    my $reload = 1;
+
+    if (-f $CACHE_FILE) {
+        my $cache = read_file_contents($CACHE_FILE);
+        if ($cache =~ /^checksum=(\w+)/m && $1 eq $checksum) {
+            # Cache hit
+            ($trap_comm) = ($cache =~ /^trap_comm=(.*)/m);
+            ($trap_engine) = ($cache =~ /^trap_engine=(.*)/m);
+            my ($host_str) = ($cache =~ /^trap_hosts=(.*)/m);
+            my ($user_str) = ($cache =~ /^trap_user=(.*)/m);
+            my ($pass_str) = ($cache =~ /^trap_pass=(.*)/m);
+
+            ($IS_TRAP) = ($cache =~ /^is_trap=(\d+)/m);
+            ($IS_V2) = ($cache =~ /^is_v2=(\d+)/m);
+            ($IS_V3) = ($cache =~ /^is_v3=(\d+)/m);
+
+	    my @host_arr = split /,/, $host_str;
+	    my @user_arr = split /,/, $user_str;
+	    my @pass_arr = split /,/, $pass_str;
+
+	    for my $i (1 .. $MAX_SNMP_USERS) {
+              $trap_user[$i]  = $user_arr[$i - 1] // "none";
+              $trap_pass[$i]  = $pass_arr[$i - 1] // "none";
+              $trap_hosts[$i] = $host_arr[$i - 1] // "none";
+            }
+            $reload = 0;
+        }
+    }
+
+    if ($reload) {
+        # Evaluate IS_* values
+        $IS_TRAP = `$GREP "trapcommunity" $SNMPD_CONF | $GREP -v "#" | $WC -l | $AWK '{print \$1}'`;
+        $IS_V3   = `$GREP "createUser" $SNMPD_CONF | $GREP -v "#" | $WC -l | $AWK '{print \$1}'`;
+        $IS_V2   = `egrep '(rocommunity|rwcommunity)' $SNMPD_CONF | egrep -v "#" | $WC -l | $AWK '{print \$1}'`;
+        chomp($IS_TRAP); chomp($IS_V3); chomp($IS_V2);
+
+        # Defaults
+        $trap_comm = "none";
+        $trap_engine = "none";
+        for ($index = 1; $index <= $MAX_SNMP_USERS; $index++) {
+            $trap_hosts[$index] = "none";
+            $trap_user[$index] = "none";
+            $trap_pass[$index] = "none";
+        }
+
+        if (-f $SNMPD_CONF) {
+            $trap_comm = `$GREP "^trapcommunity" $SNMPD_CONF | $AWK '{ print \$2 }' | tail -1`;
+            chomp($trap_comm);
+            $trap_comm = "none" if $trap_comm eq "";
+        }
+
+        if (-f $VAR_SNMP_FILE) {
+            $trap_engine = `$GREP "^oldEngineID" $VAR_SNMP_FILE | $AWK '{ print \$2 }' | tail -1`;
+            chomp($trap_engine);
+            $trap_engine = "none" if $trap_engine eq "";
+        }
+
+        for ($index = 1; $index <= $MAX_SNMP_USERS; $index++) {
+	    my $sink = `/acorn/perl/scripts/syscfg -r -u snmptrap -o sink$index 2>/dev/null`;
+	    chomp($sink);	
+	    $trap_hosts[$index] = ($sink ne '') ? $sink : 'none';
+        }
+
+        for ($index = 1; $index <= $MAX_SNMP_USERS; $index++) {
+	    $user_string = `/acorn/perl/scripts/syscfg -r -u snmptrap -o user$index 2>/dev/null`;
+    	    chomp($user_string);
+            my ($u, $p) = (split / /, $user_string)[0, 1];
+            $trap_user[$index] = $u // "none";
+            $trap_pass[$index] = $p // "none";
+        }
+
+	# Ensure all indices are initialized to avoid warnings
+	my @hosts = map { defined $trap_hosts[$_] ? $trap_hosts[$_] : "none" } (1 .. $MAX_SNMP_USERS);
+	my @users = map { defined $trap_user[$_]  ? $trap_user[$_]  : "none" } (1 .. $MAX_SNMP_USERS);
+	my @passw = map { defined $trap_pass[$_]  ? $trap_pass[$_]  : "none" } (1 .. $MAX_SNMP_USERS);
+
+        # Write to cache
+        my $cache_data = "checksum=$checksum\n";
+        $cache_data .= "trap_comm=$trap_comm\n";
+        $cache_data .= "trap_engine=$trap_engine\n";
+	$cache_data .= "trap_hosts=" . join(",", grep { defined $_ } @trap_hosts) . "\n";
+	$cache_data .= "trap_user="  . join(",", grep { defined $_ } @trap_user)  . "\n";
+	$cache_data .= "trap_pass="  . join(",", grep { defined $_ } @trap_pass)  . "\n";
+        $cache_data .= "is_trap=$IS_TRAP\n";
+        $cache_data .= "is_v2=$IS_V2\n";
+        $cache_data .= "is_v3=$IS_V3\n";
+        write_file_contents($CACHE_FILE, $cache_data);
+    }
+}
+
+# Load cached SNMP config once (includes IS_*)
+load_snmp_config_once();
+
+my $ntp_state = ((defined($ARGV[3]) && $ARGV[3] == 1) ? "Enabled" : "Disabled");
+#PR-1846896  End
+#if ($IS_TRAP != 0) {
+  for($index=1;$index<=$MAX_SNMP_USERS;$index++) {
+    if ($trap_hosts[$index] ne "none") {
+        # ------- v2 trap
+        if ($IS_V2 != 0) {
+          if ( ($#ARGV == -1) ) {         # No parameters passed
+            $system_clk = `$DATE`; chomp($system_clk); 
+            system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.23 1.3.6.1.4.1.18841.1.2.1.5.23 s \"Date/Time changed to $system_clk\"");
+            log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.23 1.3.6.1.4.1.18841.1.2.1.5.23 s \"Date/Time changed to $system_clk\"");
+          # ---------------
+          # NTP Status Trap
+          # ---------------
+          } elsif ((defined($ARGV[0])) && ($ARGV[0] eq "ntp")) {
+            if ((defined($ARGV[1])) && ($ARGV[1] == "0")) {
+              $system_clk = `$DATE`; chomp($system_clk);
+              system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: In Sync with NTP Server. Date/Time changed to $system_clk\"");
+              log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: In Sync with NTP Server. Date/Time changed to $system_clk\"");
+            } else {
+              system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: Not in Sync with NTP Server\"");
+              log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: Not in Sync with NTP Server\"");
+            }
+          # -----------------------------------------------------
+          # Bundle add/disable/activate/delete/configuration trap
+          # -----------------------------------------------------
+          } elsif ((defined($ARGV[0])) && ($ARGV[0] eq "bndl")) {
+            if ((defined($ARGV[2])) && ($ARGV[2] eq "add")) {
+              # ----- Bundle add -----
+              system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.16 1.3.6.1.4.1.18841.1.2.1.5.16 s \"Bundle $ARGV[1] Added\"");
+              log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.16 1.3.6.1.4.1.18841.1.2.1.5.16 s \"Bundle $ARGV[1] Added\"");
+            } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "dis")) {
+              # ----- Bundle disable -----
+              system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.17 1.3.6.1.4.1.18841.1.2.1.5.17 s \"Bundle $ARGV[1] status changed to Disable\"");
+              log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.17 1.3.6.1.4.1.18841.1.2.1.5.17 s \"Bundle $ARGV[1] status changed to Disable\"");
+            } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "act")) {
+              # ----- Bundle activate -----
+              system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.19 1.3.6.1.4.1.18841.1.2.1.5.19 s \"Bundle $ARGV[1] status changed to Activate\"");
+              log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.19 1.3.6.1.4.1.18841.1.2.1.5.19 s \"Bundle $ARGV[1] status changed to Activate\"");
+            } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "del")) {
+              # ----- Bundle delete -----
+              system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.20 1.3.6.1.4.1.18841.1.2.1.5.20 s \"Bundle $ARGV[1] Deleted\"");
+              log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.20 1.3.6.1.4.1.18841.1.2.1.5.20 s \"Bundle $ARGV[1] Deleted\"");
+            } else {
+              # ----- Bundle configuration change trap -----
+              system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.18 1.3.6.1.4.1.18841.1.2.1.5.18 s \"Bundle $ARGV[1] configuration changed\"");
+              log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.18 1.3.6.1.4.1.18841.1.2.1.5.18 s \"Bundle $ARGV[1] configuration changed\"");
+            }
+	              # -----------------------------
+          # NTP configuration change trap
+          # -----------------------------
+          } elsif (($ARGV[0] ne "set")) { #PR-1846896
+            system("/usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.21 1.3.6.1.4.1.18841.1.2.1.5.21 s \"NTP configuration changed: NTP state $ntp_state with SIP:$ARGV[0], KID:$ARGV[1], SS:$ARGV[2], S1IP:$ARGV[4], K1ID:$ARGV[5], SS1:$ARGV[6]\"");
+            log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -v 2c -c $trap_comm $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.21 1.3.6.1.4.1.18841.1.2.1.5.21 s \"NTP configuration changed: NTP state $ntp_state with SIP:$ARGV[0], KID:$ARGV[1], SS:$ARGV[2], S1IP:$ARGV[4], K1ID:$ARGV[5], SS1:$ARGV[6]\"");
+          }
+        }
+        # ---- v3 trap ----
+        if ($IS_V3 != 0) {
+          for($user_string=1;$user_string<=$MAX_SNMP_USERS;$user_string++) {
+            if ($trap_user[$user_string] ne "none") {
+              if ( ($#ARGV == -1) ) {         # No parameters passed
+                $system_clk = `$DATE`; chomp($system_clk);
+                system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.23 1.3.6.1.4.1.18841.1.2.1.5.23 s \"Date/Time changed to $system_clk\"");
+                log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.23 1.3.6.1.4.1.18841.1.2.1.5.23 s \"Date/Time changed to $system_clk\"");
+              # ---------------
+              # NTP Status Trap
+              # ---------------
+              } elsif ((defined($ARGV[0])) && ($ARGV[0] eq "ntp")) {
+                if ((defined($ARGV[1])) && ($ARGV[1] == "0")) {
+                  $system_clk = `$DATE`; chomp($system_clk);
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: In Sync with NTP Server. Date/Time changed to $system_clk\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: In Sync with NTP Server. Date/Time changed to $system_clk\"");
+                } else {
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: Not in Sync with NTP Server\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: Not in Sync with NTP Server\"");
+                }
+              # -----------------------------------------------------
+              # Bundle add/disable/activate/delete/configuration trap
+              # -----------------------------------------------------
+              } elsif ((defined($ARGV[0])) && ($ARGV[0] eq "bndl")) {
+                if ((defined($ARGV[2])) && ($ARGV[2] eq "add")) {
+                # ----- Bundle add -----
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.16 1.3.6.1.4.1.18841.1.2.1.5.16 s \"Bundle $ARGV[1] Added\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.16 1.3.6.1.4.1.18841.1.2.1.5.16 s \"Bundle $ARGV[1] Added\"");
+                } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "dis")) {
+                # ----- Bundle disable -----
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.17 1.3.6.1.4.1.18841.1.2.1.5.17 s \"Bundle $ARGV[1] status changed to Disable\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.17 1.3.6.1.4.1.18841.1.2.1.5.17 s \"Bundle $ARGV[1] status changed to Disable\"");
+                } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "act")) {                       # ----- Bundle activate -----
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.19 1.3.6.1.4.1.18841.1.2.1.5.19 s \"Bundle $ARGV[1] status changed to Activate\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.19 1.3.6.1.4.1.18841.1.2.1.5.19 s \"Bundle $ARGV[1] status changed to Activate\"");
+                } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "del")) {
+                # ----- Bundle delete -----
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.20 1.3.6.1.4.1.18841.1.2.1.5.20 s \"Bundle $ARGV[1] Deleted\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.20 1.3.6.1.4.1.18841.1.2.1.5.20 s \"Bundle $ARGV[1] Deleted\"");
+                } else {
+                # ----- Bundle configuration change trap -----
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.18 1.3.6.1.4.1.18841.1.2.1.5.18 s \"Bundle $ARGV[1] configuration changed\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.18 1.3.6.1.4.1.18841.1.2.1.5.18 s \"Bundle $ARGV[1] configuration changed\"");
+                }
+              # -----------------------------------------
+              # ----- NTP configuration change trap -----
+              # -----------------------------------------
+              } elsif (($ARGV[0] ne "set")) { #PR-1846896
+                system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.21 1.3.6.1.4.1.18841.1.2.1.5.21 s \"NTP configuration changed: NTP state $ntp_state with SIP:$ARGV[0], KID:$ARGV[1], SS:$ARGV[2], S1IP:$ARGV[4], K1ID:$ARGV[5], SS1:$ARGV[6]\"");
+                log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -a SHA -A $trap_pass[$user_string] -x AES $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.21 1.3.6.1.4.1.18841.1.2.1.5.21 s \"NTP configuration changed: NTP state $ntp_state with SIP:$ARGV[0], KID:$ARGV[1], SS:$ARGV[2], S1IP:$ARGV[4], K1ID:$ARGV[5], SS1:$ARGV[6]\"");
+              }
+            }
+          }
+        }
+    }
+  }
+  #} 
+
+#============================================================
+#====================== Subroutines =========================
+#============================================================
+
+sub get_sem
+{
+  my ( $sem, $label ) = @_;
+  $sem->op(
+      0, 0, 0,    # Wait till clear
+      0, 1, SEM_UNDO # Take semaphore
+      );
+}
+
+sub rel_sem
+{
+  my ( $sem, $label ) = @_;
+  $sem->op(
+      0, -1, IPC_NOWAIT # Release semaphore
+      );
+}
+
+#**** useage: log_it(Level, "Message" ); ****
+sub log_it
+{
+  my ( $level, $Message ) = @_;
+  my $dt = localtime();
+  my $host = `hostname`;
+  chomp($host);
+  if( $level < $LOG_LEVEL ) {
+    get_sem ( $LOG_SEM, "LOG_SEM" );
+    open (WRITETO, ">> $LOG_FILE");
+    print WRITETO "$dt $host snmptrap: $Message\n";
+    close (WRITETO);
+    rel_sem ( $LOG_SEM, "LOG_SEM" );
+  }
+}
+
+sub HostPingable
+{
+  my ($trap_host) = @_;
+  my $ping_tries = 0;
+  my $success = $NO;
+  log_it(4, "HostPingable: function enter with trap host $trap_host.");
+  while ( $ping_tries < $MAX_PING_TRIES ) {
+    $ping_tries++;
+    log_it(3, "HostPingable: Pinging $trap_host tries = $ping_tries of  $MAX_PING_TRIES");
+    if ($trap_host =~ /(\d+)\.(\d+)\.(\d+)\.(\d+)/) {
+      if ( `ping -c 1 -W 1 $trap_host > /dev/null && echo "SUCCESS"` =~ /SUCCESS/ ) {
+        log_it(3, "HostPingable: Reached trap host $trap_host after $ping_tries attempt(s).");
+        $success = $YES;
+        $ping_tries = $MAX_PING_TRIES;    # Exit loop!
+      }
+    } else {
+      if ( `ping -6 -c 1 -W 1 $trap_host > /dev/null && echo "SUCCESS"` =~ /SUCCESS/ ) {
+        log_it(3, "HostPingable: Reached trap host $trap_host after $ping_tries attempt(s).");
+        $success = $YES;
+        $ping_tries = $MAX_PING_TRIES;    # Exit loop!
+      }
+    }
+  }
+  if ( $success == $NO ) {
+    log_it(3, "HostPingable: Cound not ping trap host $trap_host in $ping_tries tries.");
+  }
+  return $success;
+}
+
+
+
