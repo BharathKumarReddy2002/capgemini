@@ -1,0 +1,1584 @@
+ctp.h
+
+typedef struct CtpSnmpInfo{
+    char        TrapAble;           // Traps are possible (setup is good)
+    char        TrapComm[32];       // TrapCommunity
+    char        TrapHost[CTP_MAX_TRAP_HOSTS][60];      // Trap dest hosts
+    char        TrapOid[32];        // Trap enterprise base OID
+// Aricent PR 1362733 fix - Start
+    char        TrapEngine[500];    // TrapEngine
+    char        TrapUser[CTP_MAX_TRAP_HOSTS][60];     // TrapUser
+    char        TrapPass[CTP_MAX_TRAP_HOSTS][60];     // TrapPwd
+    char        TrapPrivPass[CTP_MAX_TRAP_HOSTS][60]; // TrapPrivPwd <--- ADDED THIS LINE
+    char        TrapType;           // v2 or v3 trap
+// Aricent PR 1362733 fix - End
+} CTP_SNMP_INFO ;
+
+ctpd.c
+
+------------------------------------------------------------------------------------
+int ctpd_get_perl_mbox_user ( void * pParam1, void * pParam2, void * pParam3, char *pChar );    // Aricent PR 1362733 fix
+------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------
+int ctp_update_trap_info( void )
+{
+  int i, hostNum, Status, RetStat = 0; // Aricent PR 1362733 fix
+  struct in6_addr ip6addr;
+  char SysCmdStr[200],tmpStr[60];
+  int num_user = 0;    // Aricent PR 1362733 fix
+  FILE  *fp;
+  FUNC_PRT(ctp_update_trap_info, PF_TRAP, -1);
+  // initialize snmp trap structures  // Aricent PR 1362733 fix - Start
+  for (i=0;i<CTP_MAX_TRAP_HOSTS;i++) {
+    strcpy(Ctp.Snmp.TrapHost[i],"none");
+    strcpy(Ctp.Snmp.TrapUser[i],"none");
+    strcpy(Ctp.Snmp.TrapPass[i],"none");
+    strcpy(Ctp.Snmp.TrapPrivPass[i],"none");
+  }
+  // Aricent PR 1362733 fix - End
+  //--------- Store SNMP info to CTP structure ----------
+//Aricent PR 1401407 fix - start
+#ifdef WRL
+  sprintf(SysCmdStr,"/acorn/bin/sys_conf trapcomm c");
+  fp = popen(SysCmdStr, "r");
+  if(!fp){
+    PRTS(EVE, Could not open pipe for output, SysCmdStr);
+    PRT(MIN,sys_conf trapcomm error); RetStat++; 
+//PR-1846896 Start
+  } else { 
+    pclose(fp);
+  }
+//PR-1846896 End
+#else
+  Status = acorn_system("/acorn/bin/sys_conf trapcomm c");
+  if(Status){ PRT(MIN,sys_conf trapcomm error); RetStat++; }
+  //BAILTESTM(Status,sys_conf trapcomm error);
+#endif
+//Aricent PR 1401407 fix - End
+  Status = ctpd_get_perl_mbox(CTP_MBOX_CODE_STRING,&Ctp.Snmp.TrapComm[0],"c");
+  if(Status){ PRT(MIN,couldnt get snmp trapcomm); RetStat++; }
+  //BAILTESTF(Status,Couldnt get snmp trapcomm);
+  PRTS(GEN,Got TrapComm,Ctp.Snmp.TrapComm);
+
+  // Aricent PR 1362733 fix - Start
+#ifdef WRL
+  sprintf(SysCmdStr,"/acorn/bin/sys_conf trapengine c");
+  fp = popen(SysCmdStr, "r");
+  if(!fp){
+    PRTS(EVE, Could not open pipe for output, SysCmdStr);
+    PRT(MIN,sys_conf trapcomm error); RetStat++;
+//PR-1846896 start
+  } else {
+    pclose(fp);
+  }
+//PR-1846896 End
+#else
+  Status = acorn_system("/acorn/bin/sys_conf trapengine c");
+  if(Status){ PRT(MIN,sys_conf trapengine error); RetStat++; }
+#endif
+  Status = ctpd_get_perl_mbox(CTP_MBOX_CODE_STRING,&Ctp.Snmp.TrapEngine[0],"c");
+  if(Status){ PRT(MIN,couldnt get snmp trapengine); RetStat++; }
+  PRTS(GEN,Got TrapEngine,Ctp.Snmp.TrapEngine);
+
+
+#ifdef WRL
+  sprintf(SysCmdStr,"/acorn/bin/sys_conf traprorw c");
+  fp = popen(SysCmdStr, "r");
+  if(!fp){
+    PRTS(EVE, Could not open pipe for output, SysCmdStr);
+    PRT(MIN,sys_conf trapcomm error); RetStat++;
+//PR-1846896 Start
+  } else {
+    pclose(fp);
+  }
+//PR-1846896 End
+#else
+  Status = acorn_system("/acorn/bin/sys_conf traprorw c");
+  if(Status){ PRT(MIN,sys_conf traprorw error); RetStat++; }
+#endif
+  if((fp = fopen("/acorn/tmp/rorw", "r")) != NULL){
+    fscanf(fp, "%d", &is_v2);
+    fclose(fp);
+  }
+
+  // Aricent PR 1362733 fix - End
+
+  hostNum = 0;
+  do {
+    hostNum++;
+    sprintf(SysCmdStr,"%s/syscfg -r -u snmptrap -o sink%d > %s/%s_c",
+        CTP_PERL_DIR, hostNum, CTP_DIR, CTP_PERL_MBOX);
+//Aricent PR 1401407 fix - start
+#ifdef WRL
+  fp = popen(SysCmdStr, "r");
+  if(!fp){
+    PRTS(EVE, Could not open pipe for output, SysCmdStr);
+    PRT(MIN,syscfg trap host error); RetStat++;
+//PR-1846896 Start
+  } else {
+    pclose(fp);
+  }
+//PR-1846896 End
+#else
+    Status = acorn_system(SysCmdStr);
+    if(Status){ PRT(MIN,syscfg trap host error); RetStat++; }
+#endif
+//Aricent PR 1401407 fix - End
+   sprintf(SysCmdStr,"/bin/chmod 666 %s/%s_c", CTP_DIR, CTP_PERL_MBOX);
+
+//Aricent PR 1401407 fix - start
+#ifdef WRL
+  fp = popen(SysCmdStr, "r");
+  if(!fp){
+    PRTS(EVE, Could not open pipe for output, SysCmdStr);
+    PRT(MIN,chmod trap host error); RetStat++;
+//PR-1846896 Start
+  } else {
+    pclose(fp);
+  }
+//PR-1846896 End
+#else
+    Status = acorn_system(SysCmdStr);
+    if(Status){ PRT(MIN,chmod trap host error); RetStat++; }
+#endif
+//Aricent PR 1401407 fix - End
+
+    Status = ctpd_get_perl_mbox(CTP_MBOX_CODE_STRING,
+    Ctp.Snmp.TrapHost[hostNum-1],"c");
+    if(Status){ PRT(MIN,couldnt get snmp trap host); RetStat++; }
+
+    if(inet_pton(AF_INET6, Ctp.Snmp.TrapHost[hostNum-1], &ip6addr)) {
+      sprintf(tmpStr, "udp6:%s:162", Ctp.Snmp.TrapHost[hostNum-1]);
+      sprintf(Ctp.Snmp.TrapHost[hostNum-1],"%s",tmpStr);
+    }
+    PRTS(GEN,Got Trap Host,Ctp.Snmp.TrapHost[hostNum-1]);
+  } while( (strcmp(Ctp.Snmp.TrapHost[hostNum-1],"none") != 0) && (hostNum <= CTP_MAX_TRAP_HOSTS) );
+
+  // Aricent PR 1362733 fix - Start
+  do {
+    num_user++;
+    sprintf(SysCmdStr,"%s/syscfg -r -u snmptrap -o user%d > %s/%s_c",
+        CTP_PERL_DIR, num_user, CTP_DIR, CTP_PERL_MBOX);
+#ifdef WRL
+    fp = popen(SysCmdStr, "r");
+    if(!fp){
+      PRTS(EVE, Could not open pipe for output, SysCmdStr);
+      PRT(MIN,chmod trap host error); RetStat++;
+//PR-1846896 Start
+    } else {
+      pclose(fp);
+    }
+//PR-1846896 End
+#else
+    Status = acorn_system(SysCmdStr);
+    if(Status){ PRT(MIN,syscfg trap user error); RetStat++; }
+#endif
+    sprintf(SysCmdStr,"/bin/chmod 666 %s/%s_c", CTP_DIR, CTP_PERL_MBOX);
+#ifdef WRL
+    fp = popen(SysCmdStr, "r");
+    if(!fp){
+      PRTS(EVE, Could not open pipe for output, SysCmdStr);
+      PRT(MIN,chmod trap host error); RetStat++;
+//PR-1846896 Start
+    } else {
+      pclose(fp);
+    }
+//PR-1846896 End
+#else   
+    Status = acorn_system(SysCmdStr);
+    if(Status){ PRT(MIN,chmod trap user error); RetStat++; }
+#endif
+    Status = ctpd_get_perl_mbox_user(Ctp.Snmp.TrapUser[num_user-1],
+        Ctp.Snmp.TrapPass[num_user-1], Ctp.Snmp.TrapPrivPass[num_user-1], "c");
+    if(Status){ PRT(MIN,couldnt get snmp trap user); RetStat++; }
+    PRTS(GEN,Got Trap User,Ctp.Snmp.TrapUser[num_user-1]);
+    PRTS(GEN,Got Trap Pass,Ctp.Snmp.TrapPass[num_user-1]);
+    PRTS(GEN,Got Trap Priv Pass,Ctp.Snmp.TrapPrivPass[num_user-1]);
+  } while( (strcmp(Ctp.Snmp.TrapUser[num_user-1],"none") != 0) && (num_user <= CTP_MAX_TRAP_HOSTS) );
+  // Aricent PR 1362733 fix - End
+
+  if( (strcmp(&Ctp.Snmp.TrapComm[0],"none") != 0 ) &&
+      (strcmp(&Ctp.Snmp.TrapHost[0][0],"none") != 0 ) ) {
+    Ctp.Snmp.TrapAble = 1;
+    PRT(EVE,SNMP traps enabled);
+    // Aricent PR 1362733 fix - Start
+    if(strcmp(&Ctp.Snmp.TrapUser[0][0],"none") != 0 ) {
+      Ctp.Snmp.TrapType = 3;
+    } else {
+      Ctp.Snmp.TrapType = 0;
+    }
+    // Aricent PR 1362733 fix - End
+  } else {
+    Ctp.Snmp.TrapAble = 0;
+    PRT(EVE,SNMP traps disabled);
+    Ctp.Snmp.TrapType = 0;    // Aricent PR 1362733 fix
+  }
+  return(RetStat);
+}
+----------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------------
+// Aricent PR 1362733 fix - Start
+int ctpd_get_perl_mbox_user ( void * pParam1, void * pParam2, void * pParam3, char *pSuffix )
+{
+  int user_status;
+  FILE *user_fp = NULL;
+  char Buf[40], SysRmCmd[100];
+  FUNC_PRT(ctpd_get_perl_mbox_user, PF_MISC, -1);
+
+  sprintf(Buf,"%s/%s_%s",CTP_DIR,CTP_PERL_MBOX,pSuffix);
+  sprintf(SysRmCmd,"/bin/rm %s",Buf);
+  user_fp = fopen(Buf, "r");
+  if(user_fp == NULL) {
+    PRTS(MIN,Could not open file,Buf);
+    *(int *)pParam1 = 0;                         // return NULL
+    *(int *)pParam2 = 0;
+    *(int *)pParam3 = 0;
+    return(FAILURE);
+  }
+  user_status = fscanf(user_fp,"%s %s %s",(char *)pParam1, (char *)pParam2, (char *)pParam3);
+  if(user_status != 3) {
+    PRTS(MIN,Could not get string from file,Buf);
+    fclose(user_fp);
+    return(FAILURE);
+  }
+  fclose(user_fp);
+  acorn_system(SysRmCmd);
+  return(SUCCESS);
+}
+// Aricent PR 1362733 fix - End
+------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+##syscfg:
+
+#--------- snmpd configuration ------------------------------
+# configure snmpd communities, location & contact info
+sub snmpdconf_useage
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  print "\n";
+  print "Usage: syscfg -s -u snmpdconf [-o interactive] [-v \':<token>:[<token>:]\']\n";
+  print "  -o interactive option will ask the user for input (menu mode)\n";
+  print "  -v strings begin and end with a \":\", and have one or more tokens\n";
+  print "  Valid tokens are:\n";
+  print "  CO,<string>  = Contact String.  Alphanum, -, _ or space\n";
+  print "  LO,<string>  = Location String. Alphanum, -, _ or space\n";
+  print "  STx  = Enable or disable SNMP daemon (1=enable,0=disable).\n";
+  print "  USR,rw|ro,2,4|6,comm,ip,\n";
+  print "\trw|ro - read/write or read-only snmp user\n";
+  print "\t2     - SNMPv2 user (SNMPv1 also)\n";
+  print "\t4|6   - IPv4 or IPv6 user\n";
+  print "\tcomm  - community string may use character set in the range 0x21(!) to 0x7e(~)).\n";
+  print "\t        Characters not allowed are: backtick(\`),single quote('),comma(,) and double quote(\").\n"; #PR-1846890
+  print "\tip    - IP access for specific IP address, or \"default\" for any IP\n";
+  print "\t      - IP (v4&v6) Subnet access is OK using CIDR notation\n";
+  print "  USR,ro,3,user,auth_pass,priv_pass,ip,\n";
+  print "\tro        - read-only snmp user\n";
+  print "\t3         - SNMPv3 user\n";
+  print "\tuser      - username may use character set in the range 0x21(!) to 0x7e(~).\n";
+  print "\t            Characters not allowed are: backtick(\`),single quote('),comma(,) and double quote(\").\n"; #PR-1846890
+  print "\tauth_pass - Authentication password (SHA) (must be at least 8 chars)\n";
+  print "\tpriv_pass - Privacy password (AES) (must be at least 8 chars)\n";
+  print "\t            Passwords may have character set from 0x21(!) to 0x7e(~).\n";                     
+  print "\t            Characters not allowed are: backtick(\`),single quote('),comma(,) and double quote(\").\n";#PR-1846890
+  print "\tip        - IP access for specific IP address, or \"default\" for any IP\n";
+  print "\n  Notes:\n";
+  print "\t- Leaving out CO and LO tokens will result in those fields being\n";
+  print "\t  set to \"Unset\" in the config file\n";
+  print "\t- Only USR tokens specified will exist on the system after config\n";
+  print "\t  All previous SNMP users will be deleted\n";
+  print "\n";
+  print "Usage: syscfg -r -u snmpdconf \n";
+  print "\tDumps current SNMP config in above -v format\n";
+  exit $E_UNKNOWN;
+}
+
+
+sub snmpdconf_read
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp, $opts ) = @_;
+  if( $DEBUG ) { print "snmpdconf_read: Function Enter\n"; }
+  my $num_cfgd_snmp = 0;
+  my ($index, $p_err );
+  # Initialize hash to all unused entries
+  for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+    $snmp->{$index}{used} = "no"; }
+  $snmp->{location} = "Unset";
+  $snmp->{contact} = "Unset";
+  $p_err = $OK;
+
+  #----- Get config from file -----
+  $index = 1;
+  open(  READ, "< $SNMPDCONF" ) or return $NO_SUCH_FILE;
+  while (<READ>) {
+    # As of version 5.3.0.1, we use rwcommunity to setup v2c access
+    # Format: rwcommunity <community name> [<ip>|default]
+    # Note: default is equilavent to not specifying a server ip. In these
+    # cases requests form ANY ip are serviced.
+    if( $_ =~ /^(..)community6\s+(\S+)\s*(\S*)/ ) {
+      if($DEBUG){print "snmpdconf_read: found IPv6 comm, USR $index\n"; }
+      $snmp->{$index}{used}  = "yes";
+      $snmp->{$index}{SNMPv} = 2;
+      $snmp->{$index}{rw}    = $1;
+      $snmp->{$index}{IPv}   = 6;
+      $snmp->{$index}{comm}  = $2;
+      $snmp->{$index}{ip}    = $3;
+      $index++;
+    } 
+    elsif( $_ =~ /^(..)community\s+(\S+)\s*(\S*)/ ) {
+      $snmp->{$index}{used}  = "yes";
+      $snmp->{$index}{SNMPv} = 2;
+      $snmp->{$index}{rw}    = $1;
+      $snmp->{$index}{IPv}   = 4;
+      $snmp->{$index}{comm}  = $2;
+      $snmp->{$index}{ip}    = $3;
+      $index++;
+    } 
+    # UPDATED REGEX: Captures user, auth_pass, priv_pass, and ip
+    elsif( $_ =~ /^createUser\s+([!-~]+)\s+\w+\s+"([!-~]+)"\s+\w+\s+"([!-~]+)"\s+([!-~]*)/ ) { # Aricent PR 1362733 fix PR-1846890
+      $snmp->{$index}{used} = "yes";
+      $snmp->{$index}{SNMPv} = 3;
+      $snmp->{$index}{user} = $1;
+      $snmp->{$index}{auth_pass} = $2;
+      $snmp->{$index}{priv_pass} = $3;
+      # Aricent PR 1362733 fix - Start
+      $snmp->{$index}{ip}   = $4;
+      if($snmp->{$index}{ip} =~ /(\d+)\.(\d+)\.(\d+)\.(\d+)/) {
+        $snmp->{$index}{IPv}   = 4;
+      } else {
+        $snmp->{$index}{IPv}   = 6;
+      }
+      # Aricent PR 1362733 fix - End
+      $snmp->{$index}{rw} = "ro";   # only do read-only for now
+      $index++;
+    } 
+    elsif( $_ =~ /^syslocation\s+\"(.+)\"/ ) {
+      $snmp->{location} = $1;
+    } elsif( $_ =~ /^syscontact\s+\"(.+)\"/ ) {
+      $snmp->{contact} = $1;
+    }
+  }
+  close ( READ );
+
+  #----- Get daemon state -----
+  $snmp->{state} = `$SELF -r -u daemon -o snmpd`; chomp($snmp->{state});
+  $snmp->{state} =~ /ST(\d)/; $snmp->{state} = $1;
+  if($DEBUG){print "snmpdconf_read: found state: $snmp->{state}\n"; }
+  return $p_err;
+}
+
+sub snmpdconf_check
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp, $opts ) = @_;
+  if( $DEBUG ) { print "snmpdconf_check: Function Enter\n"; }
+  my $num_cfgd_snmp = 0;
+  my ($index, $p_err, $ipv4_hex, $ipv4_mask );
+  $p_err = 0;
+  
+  #--- Check Location string
+  if( $snmp->{location} !~ /^[=;\sA-Za-z0-9_-]+$/ ) {
+    print "---> Bad chars in location string: $snmp->{location}, ";
+    $snmp->{location} = "Unset";
+    print "Setting to: $snmp->{location}\n";
+    print "\tUsage: Only alphanumeric or the characters ; = - _ are allowed.\n";
+  } else {
+    #$snmp->{location} =~ s/\s+/_/; # change spaces to "_"
+  }
+  #--- Check Contact string
+  if( $snmp->{contact} !~ /^[=;\sA-Za-z0-9_-]+$/ ) {
+    print "---> Bad chars in contact string: $snmp->{contact}, ";
+    $snmp->{contact} = "Unset";
+    print "Setting to: $snmp->{contact}\n";
+    print "\tUsage: Only alphanumeric or the characters ; = - _ are allowed.\n";
+  } else {
+    #$snmp->{contact} =~ s/\s+/_/;  # change spaces to "_"
+  }
+
+  for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+    if( $snmp->{$index}{used} eq "yes" ) {
+      if($DEBUG){print "Found USR at index $index\n"; }
+      #--- SNMPv2 ---
+      if( $snmp->{$index}{SNMPv} == 2 ) {
+    if( ($snmp->{$index}{rw} ne "ro" ) && 
+        ($snmp->{$index}{rw} ne "rw" ) ) {
+      $p_err++; 
+      print "---> bad SNMPv: $snmp->{$index}{rw}\n"; 
+    }
+    #--- SNMPv2 Community ---
+    if($DEBUG){print "Checking comm string: $snmp->{$index}{comm}\n";}
+    if( $snmp->{$index}{comm} !~ /^[\!\#\@A-Za-z0-9_\-\?^&\{}\[\]%~=\$|\/<>:;.+*(\)\\]+$/ ) { #PR-1846890
+      $p_err++; print "---> Bad chars in comm string: $snmp->{$index}{comm}\n";
+    }
+      }
+      #--- SNMPv3 ---
+      elsif( $snmp->{$index}{SNMPv} == 3 ) {
+        if( $snmp->{$index}{user} !~ /^[\!\#\@A-Za-z0-9_\-\?^&\{}\[\]%~=\$|\/<>:;.+*(\)\\]+$/ ) { #PR-1846890
+          $p_err++; print "---> Bad chars in user string: $snmp->{$index}{user}\n";
+        }
+        
+        # Check Auth Password
+        if( $snmp->{$index}{auth_pass} !~ /^[\!\#\@A-Za-z0-9_\-\?^&\{}\[\]%~=\$|\/<>:;.+*(\)\\]+$/ ) { #PR-1846890
+          $p_err++; print "---> Bad chars in auth_pass string: $snmp->{$index}{auth_pass}\n";
+        }
+        if( length($snmp->{$index}{auth_pass}) < 8 ) {
+          $p_err++; print "---> Auth Passwd length is less than 8 chars\n"; 
+          if($DEBUG){print "auth_pass length: %d\n", length($snmp->{$index}{auth_pass}); }
+        }
+
+        # Check Priv Password
+        if( $snmp->{$index}{priv_pass} !~ /^[\!\#\@A-Za-z0-9_\-\?^&\{}\[\]%~=\$|\/<>:;.+*(\)\\]+$/ ) { #PR-1846890
+          $p_err++; print "---> Bad chars in priv_pass string: $snmp->{$index}{priv_pass}\n";
+        }
+        if( length($snmp->{$index}{priv_pass}) < 8 ) {
+          $p_err++; print "---> Priv Passwd length is less than 8 chars\n"; 
+          if($DEBUG){print "priv_pass length: %d\n", length($snmp->{$index}{priv_pass}); }
+        }
+      }
+      else {
+        $p_err++;
+        print "---> bad SNMPv: $snmp->{$index}{SNMPv}\n";
+      }
+      # Aricent PR 1362733 fix - Start
+      if( ($snmp->{$index}{SNMPv} == 2) || ($snmp->{$index}{SNMPv} == 3) ) {
+        #--- SNMPv2/v3 IPv4 ---
+        if( $snmp->{$index}{IPv} == 4 ) {
+          if( ($snmp->{$index}{ip} ne "default") && ($snmp->{$index}{ip} ne "")) {
+            if( $snmp->{$index}{ip} =~ /$IPV4ADDFORMAT\/(\d+)/ ) {
+              $o1=$1; $o2=$2; $o3=$3; $o4=$4;
+              $snmp->{$index}{ip_bits} = $5;
+            } elsif( $snmp->{$index}{ip} =~ /$IPV4ADDFORMAT/ ) {
+              $o1=$1; $o2=$2; $o3=$3; $o4=$4;
+              $snmp->{$index}{ip_bits} = 32;
+            } else {
+              $p_err++;
+              print "---> Bad IP address format: $snmp->{$index}{ip}\n";
+              $ipv4_hex = 0; $ipv4_mask = 0;
+              $o1=$o2=$o3=$o4=0;
+              $snmp->{$index}{ip_bits} = 32;
+            }
+            $ipv4_hex = ($o1<<24)+($o2<<16)+($o3<<8)+$o4;
+            if($DEBUG){print "ip_bits:  $snmp->{$index}{ip_bits}\n"; }
+            if( $snmp->{$index}{ip_bits} == 32 ) {
+              $ipv4_mask = 0xffffffff;
+            } else {
+              $ipv4_mask = (1 << $snmp->{$index}{ip_bits}) - 1;
+              $ipv4_mask = $ipv4_mask << (32 - $snmp->{$index}{ip_bits});
+            }
+            if($DEBUG){printf("ipv4_hex:  0x%x\n",$ipv4_hex); }
+            if($DEBUG){printf("ipv4_mask: 0x%x\n",$ipv4_mask); }
+            my $not_mask = 0xffffffff ^ $ipv4_mask;
+            if($DEBUG){printf("not_mask: 0x%x\n",$not_mask); }
+            if( $ipv4_hex & $not_mask ) {
+              $p_err++;
+              print "---> Improper CIDR format: $snmp->{$index}{ip}\n";
+            }
+          } elsif( ($snmp->{$index}{ip} eq "default") || ($snmp->{$index}{ip} eq "")) {
+            if($DEBUG){print "IPv4 address set to default"; }
+          } else {
+            $p_err++;
+            print "---> Bad IPv4 address string: $snmp->{$index}{ip}\n";
+          }
+        }
+        #--- SNMPv2/v3 IPv6 ---
+        elsif( $snmp->{$index}{IPv} == 6 ) { 
+          if( ($snmp->{$index}{ip} ne "default") && ($snmp->{$index}{ip} ne "")) {
+            if( $snmp->{$index}{ip} =~ /$IPV6ADDFORMAT\/(\d+)/ ) {
+              $snmp->{$index}{ip_bits} = $1;
+            } elsif( $snmp->{$index}{ip} =~ /$IPV6ADDFORMAT/ ) {
+              $snmp->{$index}{ip_bits} = 32;
+            } else {
+              $p_err++; print "---> Bad IP address format: $snmp->{$index}{ip}\n";
+            }
+          } elsif( ($snmp->{$index}{ip} eq "default") || ($snmp->{$index}{ip} eq "")) {
+            if($DEBUG){print "IPv6 address set to default"; }
+          } else {
+            $p_err++;
+            print "---> Bad IPv6 address string: $snmp->{$index}{ip}\n";
+          }
+        }
+        #--- SNMPv2/v3 IPv? ---
+        else {
+          $p_err++;
+          print "---> Bad IPv: $snmp->{$index}{IPv}\n";
+        }
+      }
+      # Aricent PR 1362733 fix - End
+
+      if($p_err) { 
+    print "===> Errors found during check: Deleting SNMP user\n"; 
+        $snmp->{$index}{used} = "no"; 
+    $p_err = $OK;   # reset the error counter
+      }
+    } 
+  }
+
+  return $p_err;
+}
+
+sub snmpdconf_set
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp, $opts, $string ) = @_;
+  # Aricent PR 1255040 fix - Start
+  my ($engine_id);
+  my $tmp = `$GREP "engineID" $SNMPDCONF | $WC -l`;
+  my (@choices);
+  my ($sel);
+  # Aricent PR 1255040 fix - End
+  if( $DEBUG ) { print "snmpdconf_set: Function Enter\n"; }
+
+  #=========== Interactive ============
+  if( defined($opts) && ($opts =~ /interactive/) ) { 
+    my $rtn = "";
+    my $cnt = 0;    # index of last configured element
+
+    print "\nCurrent SNMP Location string is \"$snmp->{location}\".\n";
+    $snmp->{location} = 
+      ask_for_string("Location String (<cr> to keep)", $snmp->{location});
+    print "\nCurrent SNMP Contact string is \"$snmp->{contact}\".\n";
+    $snmp->{contact} = 
+      ask_for_string("Contact String (<cr> to keep)", $snmp->{contact});
+  # Aricent PR 1255040 fix - Start
+    if ( $tmp =~ /0/ ) {
+      print "\nDo you want to add SNMPv3 engine id?\n";
+    } else {
+      $engine_id = `$GREP "engineID" $SNMPDCONF | $AWK '{print \$2}'`;
+      chomp($engine_id);
+      print "\nThe configured SNMPv3 engine ID is $engine_id";
+      print "\nDo you want to edit this SNMPv3 engine id?\n";
+    }
+    @choices = ('Yes','No');
+    $sel = ask_for_choice(\@choices,$#choices);
+    if( $sel =~ /Yes/ ) {
+      $engine_id = ask_for_string("the SNMPv3 engine id");
+   # Aricent PR 1323213 fix - Start
+    if ( $engine_id !~ /^[\w\.]+$/ ) {
+    print "Only alphanumerics or \"_\" or \".\" allowed in engineId!!\n";
+    exit(-1);
+    }
+    # Aricent PR 1323213 fix - End
+      if ( $tmp =~ /0/ ) {
+        `echo "engineID $engine_id" >> $SNMPDCONF`;
+      } else {
+        `$SED -i '/^[ ]*engineID/ cengineID $engine_id' $SNMPDCONF`;
+      }
+     `echo "engineID $engine_id" > /etc/eng_id_key`; # Aricent PR 1362872 fix
+      $snmp_usm = 1;
+      if( ! $ON_GUI )  { system ("/etc/init.d/local", "logflush"); } #Aricent PR 1401407 fix
+      FLUSH_ETC();
+    }
+    # Aricent PR 1255040 fix - End
+    while ($rtn !~ /^quit/) {
+      # Find out how many SNMP users there are by displaying them.
+      $cnt = snmpdconf_show( $snmp, $opts );
+      print "\nHow do you want to change SNMP users (add/del/quit) ? (<cr> to show): ";
+      chop ( $rtn = <STDIN> );
+      if ( $rtn =~ /add/ ) {
+    snmpdconf_set_add($snmp, $cnt);
+    snmpdconf_check($snmp, $opts);
+      } elsif ( $rtn =~ /del/ ) {
+    if($cnt == 0) { print "Sorry, but there are no SNMP users configured\n" }
+    else { snmpdconf_set_del($snmp, $cnt); }
+      }
+      print "\n\n";
+    }
+    if( $cnt ) { $snmp->{state} = 1; }  # users exist, so enable daemon
+    else       { $snmp->{state} = 0; }
+  } 
+  #=========== Non-Interactive (from string) ============
+  else {
+    my $index;
+    my $p_err = 0;
+# Initialize hash to all unused entries
+    for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+      $snmp->{$index}{used} = "no"; }
+    $snmp->{location} = "Unset";
+    $snmp->{contact} = "Unset";
+    $index = 1;
+
+    while( ($string ne ":") && ($p_err == 0) ) {
+      if($DEBUG){print STDOUT "---> String to parse: \"$string\"\n";}
+      #--- LO token
+      if( $string =~ s/^:LO,([^:]+):/:/ )  { 
+    $snmp->{location} = $1;
+    if($DEBUG){print STDOUT "---> location: \"$1\"\n";}
+      }
+      #--- CO token
+      elsif( $string =~ s/^:CO,([^:]+):/:/ )  { 
+    $snmp->{contact} = $1;
+    if($DEBUG){print STDOUT "---> contact: \"$1\"\n";}
+      }
+      #--- ST token
+      elsif( $string =~ s/^:ST(\d+):/:/ )      { $snmp->{state} = $1; }
+      #--- USR token
+      elsif( $string =~ /^:USR,(r[ow]),([23]),/ ) { 
+    if( $string =~ s/^:USR,(r[ow]),2,([^,]+),([^,]+),([^,]+),:/:/ ) { 
+      if( $DEBUG ) { print "Found SNMPv2 user # $index\n"; }
+      $snmp->{$index}{used}  = "yes";
+      $snmp->{$index}{rw}    = $1;
+      $snmp->{$index}{SNMPv} = 2;
+      $snmp->{$index}{IPv}   = $2;
+      $snmp->{$index}{comm}  = $3;
+      $snmp->{$index}{ip}    = $4;
+      # This is the place to do some checking...
+      # (IP format or password strength)
+      if( $DEBUG ) { 
+        print "Parsed from string:\n";
+        print "used  : $snmp->{$index}{used}\n";
+        print "rw    : $snmp->{$index}{rw}\n";
+        print "SNMPv : $snmp->{$index}{SNMPv}\n";
+        print "IPv   : $snmp->{$index}{IPv}\n";
+        print "comm  : $snmp->{$index}{comm}\n";
+        print "ip    : $snmp->{$index}{ip}\n";
+      }
+      $index++;
+    }
+    # UPDATED REGEX: Now expects 6 extra fields instead of 5
+    elsif( $string =~ s/^:USR,(r[ow]),3,([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),:/:/ ) {    # Aricent PR 1362733 fix 
+      if( $DEBUG ) { print "Found SNMPv3 user # $index\n"; }
+      $snmp->{$index}{used}      = "yes";
+      $snmp->{$index}{rw}        = $1;
+      $snmp->{$index}{SNMPv}     = 3;
+      $snmp->{$index}{user}      = $2;
+      $snmp->{$index}{auth_pass} = $3;
+      $snmp->{$index}{priv_pass} = $4;
+          # Aricent PR 1362733 fix - Start
+          $snmp->{$index}{IPv}   = $5;
+          $snmp->{$index}{ip}    = $6;
+          # Aricent PR 1362733 fix - End
+      if( $DEBUG ) { 
+        print "Parsed from string:\n";
+        print "used      : $snmp->{$index}{used}\n";
+        print "rw        : $snmp->{$index}{rw}\n";
+        print "SNMPv     : $snmp->{$index}{SNMPv}\n";
+        print "user      : $snmp->{$index}{user}\n";
+        print "auth_pass : $snmp->{$index}{auth_pass}\n";
+        print "priv_pass : $snmp->{$index}{priv_pass}\n";
+        print "IPv       : $snmp->{$index}{IPv}\n";
+        print "ip        : $snmp->{$index}{ip}\n";    # Aricent PR 1362733 fix
+      }
+      $index++;
+    } else { $p_err++; print "Couldn't parse USR token\n"; }
+      }
+      # Aricent PR 1255040 fix - Start
+      #--- SNMPv3 Engine ID Token
+      elsif( $string =~ s/^:SNMPv3_EID,([^:]+):/:/ )  {
+        $engine_id = $1;
+       # Aricent PR 1323213 fix - Start
+        if ( $engine_id !~ /^[\w\.]+$/ ) {
+                print "Only alphanumerics or \"_\" or \".\" allowed in engineId!!\n";
+                exit(-1);
+           }
+        # Aricent PR 1323213 fix - End
+        if ( $tmp =~ /0/ ) {
+          `echo "engineID $engine_id" >> $SNMPDCONF`;
+        } else {
+          `$SED -i '/^[ ]*engineID/ cengineID $engine_id' $SNMPDCONF`;
+        }
+        $snmp_usm = 1;
+      }
+      # Aricent PR 1255040 fix - End
+      #--- default token
+      else { $p_err++; print "rw or SNMPv fields not right\n"; }
+    }
+    #if ( $p_err ) { snmpdconf_useage(); }
+    if ( $p_err ) { exit(-1); }
+  }
+}
+
+sub snmpdconf_stop_start
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp ) = @_;
+  my $rtn;
+  my ($stop_request, $start_request);
+  if($DEBUG){print "snmpdconf_stop_start: Function Enter\n";}
+
+  my $curr_state = `$SELF -r -u daemon -o snmpd`; chomp($curr_state);
+  $curr_state =~ /ST(\d+)/; $curr_state = $1;   # extract number
+
+  if( $DEBUG ) { print "curr_state $curr_state\n"; }
+  if( $DEBUG ) { print "new state $snmp->{state}\n"; }
+
+  if ( ($curr_state == 1) && ($snmp->{state} == 1) ) {
+    # We have reconfigured, want a restart to pickup cfg changes.
+    if( $DEBUG ) { print "Got restart request!\n"; }
+    $stop_request = 1; $start_request = 1;
+  } elsif ( ($curr_state == 0) && ($snmp->{state} == 1) ) {
+    if( $DEBUG ) { print "Daemon start request\n"; }
+    $stop_request = 0; $start_request = 1;
+  } elsif ( ($curr_state == 1) && ($snmp->{state} == 0) ) {
+    if( $DEBUG ) { print "Daemon stop request\n"; }
+    $stop_request = 1; $start_request = 0;
+  } else {
+    if( $DEBUG ) { print "Request to leave deamon not running\n"; }
+    $stop_request = 0; $start_request = 0;
+  }
+
+  if( $stop_request ) {
+    $rtn = daemon_cfg( "0", "snmpd", "ST0" );
+    if( "$rtn" ne "$OK" ) {
+      if( $DEBUG ) { print "Problem stopping daemon.\n"; }
+      return $rtn;
+    }
+  }
+  # Aricent PR 1255040 fix - Start
+  if( $snmp_usm ) {
+    if ( !-f $VAR_SNMPDCONF ) { #Aricent PR 1604917 fix
+       system("/etc/init.d/snmpd start");
+     } 
+    `$SED -i -e '/^[ ]*usmUser/d' $VAR_SNMPDCONF`;
+    $snmp_usm = 0;
+    #Aricent PR 1604917 fix
+  }
+  # Aricent PR 1255040 fix - End
+  # Aricent PR 1362733 fix - Start
+  for(my $index=1;$index<=$MAX_SNMP_USERS;$index++) {
+    if( ($snmp->{$index}{used} eq "yes") && ($snmp->{$index}{SNMPv} == 3) ) {
+      if ( -f $VAR_SNMPDCONF ){#Aricent PR 1604917 fix
+    # UPDATED LINE: Uses auth_pass for SHA and priv_pass for AES
+    `/bin/echo "createUser $snmp->{$index}{user} SHA \\"$snmp->{$index}{auth_pass}\\" AES \\"$snmp->{$index}{priv_pass}\\"" >> $VAR_SNMPDCONF`;      
+      }#Aricent PR 1604917 fix    
+    } 
+  }
+  # Aricent PR 1362733 fix - End
+  if( $start_request ) {
+    $rtn = daemon_cfg( "0", "snmpd", "ST1" );
+    if( "$rtn" ne "$OK" ) {
+      if( $DEBUG ) { print "Problem setting snmp state.\n"; }
+      return $rtn;
+    }
+  }
+  `echo 1 > /acorn/tmp/snmp_cfg`;
+  system("/acorn/perl/scripts/trap_clock.pl set 2>/dev/null"); #PR-1846896 
+  return $OK;
+}
+
+sub snmpdconf_show
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp, $opts ) = @_;
+  my $num_cfgd_snmp = 0;
+  my $index;
+  my $engine_id = `$GREP "engineID" $SNMPDCONF | $WC -l`;    # Aricent PR 1255040 fix
+  if($DEBUG){print "snmpdconf_show: Function Enter\n";}
+
+  #=========== Interactive ============
+  if( (defined $opts) && ($opts =~ /interactive/i) ){
+    print STDOUT "  Location: \"$snmp->{location}\"\n";
+    # Aricent PR 1255040 fix - Start
+    print STDOUT "  Contact:  \"$snmp->{contact}\"\n";
+    if ( $engine_id =~ /1/ ) {
+        $engine_id = `$GREP "engineID" $SNMPDCONF | $AWK '{print \$2}'`;
+        chomp($engine_id);
+        print STDOUT "  SNMPv3 Engine ID: \"$engine_id\"\n\n";
+    }
+    # Aricent PR 1255040 fix - End
+
+    for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+      if( $snmp->{$index}{used} eq "yes" ) {
+    $num_cfgd_snmp++;
+    print STDOUT "  $num_cfgd_snmp) ";
+    print STDOUT "Type: SNMPv" . $snmp->{$index}{SNMPv} . " ";
+    print STDOUT "Access: " . $snmp->{$index}{rw} . " ";
+    if( $snmp->{$index}{SNMPv} == 2 ) {
+      print STDOUT "Comm: \"" . $snmp->{$index}{comm} . "\" ";
+      print STDOUT "IPv" . $snmp->{$index}{IPv} . " ";
+      print STDOUT "IP: " . $snmp->{$index}{ip} . " ";
+    } else {
+      print STDOUT "User: \"" . $snmp->{$index}{user} . "\" ";
+      # UPDATED: Show both Auth and Priv passwords in the interactive menu
+      print STDOUT "AuthPass: \"" . $snmp->{$index}{auth_pass} . "\" ";
+      print STDOUT "PrivPass: \"" . $snmp->{$index}{priv_pass} . "\" ";
+          # Aricent PR 1362733 fix - Start
+          print STDOUT "IPv" . $snmp->{$index}{IPv} . " ";
+          print STDOUT "IP: " . $snmp->{$index}{ip} . " ";
+          # Aricent PR 1362733 fix - End
+    }
+    print STDOUT "\n";
+      }
+    }
+    if($num_cfgd_snmp) {
+      if( $DEBUG ) { print "Found $num_cfgd_snmp SNMP users\n"; }
+    } else {
+      print "\nNo SNMP users are configured on the system :\n\n";
+    }
+  } 
+  #=========== Non-Interactive (single string) ============
+  else {
+    print STDOUT ":ST$snmp->{state}:";
+    print STDOUT "LO,$snmp->{location}:";
+    print STDOUT "CO,$snmp->{contact}:";
+    for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+      if( $snmp->{$index}{used} eq "yes" ) {
+    print STDOUT "USR,";
+    print STDOUT $snmp->{$index}{rw}     . ",";
+    print STDOUT $snmp->{$index}{SNMPv}  . ",";
+    if( $snmp->{$index}{SNMPv} == 2 ) {
+      print STDOUT $snmp->{$index}{IPv}  . ",";
+      print STDOUT $snmp->{$index}{comm} . ",";
+      print STDOUT $snmp->{$index}{ip}   . ",";
+    } else {
+      print STDOUT $snmp->{$index}{user} . ",";
+      # UPDATED: Output both passwords to the raw string
+      print STDOUT $snmp->{$index}{auth_pass} . ",";
+      print STDOUT $snmp->{$index}{priv_pass} . ",";
+          # Aricent PR 1362733 fix - Start
+          print STDOUT $snmp->{$index}{IPv}  . ",";
+          print STDOUT $snmp->{$index}{ip}  . ",";
+          # Aricent PR 1362733 fix - End
+    }
+    print STDOUT ":";
+      }
+    }
+ # Aricent PR 1255040 fix - Start
+    if ( $engine_id =~ /1/ ) {
+      $engine_id = `$GREP "engineID" $SNMPDCONF | $AWK '{print \$2}'`;
+      chomp($engine_id);
+      print STDOUT "SNMPv3_EID,$engine_id:";
+    # Aricent PR 1362733 fix - Start
+    } else {
+      print STDOUT "SNMPv3_EID,_:";
+    # Aricent PR 1362733 fix - End
+    }
+    # Aricent PR 1255040 fix - End
+    print STDOUT "\n";
+  }
+  return $num_cfgd_snmp;
+}
+
+sub snmpdconf_set_add
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ($snmp, $num_cfgd_snmp) = @_ ;
+  my (@choices);
+  my $index = 1;
+  my $found_mt_idx = 0;
+  my ($sel);
+  if($DEBUG){print "snmpdconf_set_add: Function Enter\n";}
+  if($num_cfgd_snmp >= $MAX_SNMP_USERS) {
+    print "$num_cfgd_snmp SNMP users are already configured on the system\n";
+    print "deletion of a user is required prior to addition of a new one \n";
+  } else {
+    $num_cfgd_snmp++;
+    # find the available slot in the snmp hash
+    while( ($index<=$MAX_SNMP_USERS) && ($found_mt_idx==0) ) {
+      if( $snmp->{$index}{used} eq "yes" ) { $index++; }
+      else { $found_mt_idx++; }
+    }
+    if($DEBUG){print "Free hash index: $index\n"; }
+    $snmp->{$index}{used} = "yes";
+    #----
+    @choices = ('SNMPv2','SNMPv3');
+    $sel = ask_for_choice(\@choices,$#choices);
+    $sel =~ /SNMPv(\d+)/;
+    $snmp->{$index}{SNMPv} = $1;
+    if($DEBUG){print "SNMPv: $snmp->{$index}{SNMPv}\n"; }
+    #----
+    if( $snmp->{$index}{SNMPv} == 2 ) {
+      @choices = ('Read-Only','Read-Write');
+      $sel = ask_for_choice(\@choices,$#choices);
+      if( $sel =~ /Read-Only/ ) { $snmp->{$index}{rw} = "ro"; }
+      else {                      $snmp->{$index}{rw} = "rw"; }
+      if($DEBUG){print "rw: $snmp->{$index}{rw}\n"; }
+      #----
+      print "\nComm string may have character set from 0x21(!) to 0x7e(~), characters backtick (\`), single quote ('),comma(,),and double quote (\") are not allowed. \n"; #PR-1846890 
+      $snmp->{$index}{comm} = ask_for_string("the SNMP Community String");
+      if($DEBUG){print "comm: $snmp->{$index}{comm}\n"; }
+    } else {
+      $snmp->{$index}{rw} = "ro";
+      #----
+      print "\nSNMPv3 user string may have character set from 0x21(!) to 0x7e(~), characters backtick (\`), single quote ('),comma (,) and double quote (\") are not allowed.\n";#PR-1846890 
+      $snmp->{$index}{user} = ask_for_string("the SNMPv3 User");
+      if($DEBUG){print "user: $snmp->{$index}{user}\n"; }
+      #----
+      # UPDATED: Prompting for two separate passwords
+      print "\nSNMPv3 passwords may have character set from 0x21(!) to 0x7e(~), characters backtick (\`), single quote ('), comma (,), and double quote (\") are not allowed. \n";#PR-1846890 
+      print "SNMPv3 passwords length must be at least 8 chars\n"; 
+      
+      $snmp->{$index}{auth_pass} = ask_for_string("the SNMPv3 Auth password (SHA)");
+      if($DEBUG){print "auth_pass: $snmp->{$index}{auth_pass}\n"; }
+
+      $snmp->{$index}{priv_pass} = ask_for_string("the SNMPv3 Priv password (AES)");
+      if($DEBUG){print "priv_pass: $snmp->{$index}{priv_pass}\n"; }
+    }
+    # Aricent PR 1362733 fix - Start
+    @choices = ('IPv4','IPv6');
+    $sel = ask_for_choice(\@choices,$#choices);
+    $sel =~ /IPv(\d+)/;
+    $snmp->{$index}{IPv} = $1;
+    if($DEBUG){print "IPv: $snmp->{$index}{IPv}\n"; }
+    #----
+    if( $snmp->{$index}{IPv} == 4 ) {
+      $sel = ask_for_ip("query IP (0.0.0.0 for any IP)", "0.0.0.0");
+      if( $sel =~ /0\.0\.0\.0/ ) {
+        if( $snmp->{$index}{SNMPv} == 2 ) {
+          $snmp->{$index}{ip} = "default";
+        } else {
+          $snmp->{$index}{ip} = "";
+        }
+      } else { $snmp->{$index}{ip} = $sel; }
+    } else {
+      $sel = ask_for_ipv6_add("query IP (::0 for any IP)", "::0");
+      if( $sel =~ /::0/ ) {
+        if( $snmp->{$index}{SNMPv} == 2 ) {
+          $snmp->{$index}{ip} = "default";
+        } else {
+          $snmp->{$index}{ip} = "";
+        }
+      } else { $snmp->{$index}{ip} = $sel; }
+    }
+    # Aricent PR 1362733 fix - End
+  }
+}
+
+sub snmpdconf_write
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ($snmp) = @_ ;
+  my ($index);
+  my $tmp = "/tmp/foo";
+  if($DEBUG){print "snmpdconf_write: Function Enter\n";}
+
+
+  # Flush all the old configs from snmpd.conf file
+  open( WRITE, "> $tmp" ) or return $NO_SUCH_FILE;
+  open( READ, "< $SNMPDCONF" ) or return $NO_SUCH_FILE;
+  while(<READ>) {
+    if( ($_ =~ /rocommunity/) ||
+    ($_ =~ /rwcommunity/) ||
+    ($_ =~ /rouser/)      ||
+    ($_ =~ /createUser/)  ||
+    ($_ =~ /trapsess/)    ||  # ADDED: Flush old trapsess lines
+    ($_ =~ /syslocation/) ||
+    ($_ =~ /^pass/)       ||
+    ($_ =~ /syscontact/) ) {
+    chomp($_);
+      if( $DEBUG ) { print "Deleting |$_| from file\n"; }
+    } else {
+      print WRITE "$_";
+    }
+  }
+
+  # Add new configs to end of snmpd.conf file
+  print WRITE "syslocation \"$snmp->{location}\"\n";
+  print WRITE "syscontact  \"$snmp->{contact}\"\n";
+
+  for($index=1;$index<=$MAX_SNMP_USERS;$index++) {
+    if( $snmp->{$index}{used} eq "yes" ) {
+      if( $DEBUG ) { print "Writing SNMPv"; }
+      if( $snmp->{$index}{SNMPv} == 2 ) {
+    if( $DEBUG ) { print "2 user # $index\n"; }
+    print WRITE $snmp->{$index}{rw} . "community";
+    if( $snmp->{$index}{IPv} == 6 ) { print WRITE "6 "; }
+    else {                             print WRITE "  "; }
+    print WRITE $snmp->{$index}{comm} . " ";
+    if( $snmp->{ $index}{ip} eq "default") { print WRITE "default\n"; }
+    else { print WRITE $snmp->{$index}{ip} . "\n"; }
+      } else {      # SNMPv3
+    if( $DEBUG ) { print "3 user # $index\n"; }
+    print WRITE $snmp->{$index}{rw} . "user ";
+    print WRITE $snmp->{$index}{user} . " priv\n";
+    
+    # UPDATED: Write createUser with both Auth and Priv passwords in quotes
+    # Note: The IP at the end is maintained as a storage hack for the query IP filter
+    print WRITE "createUser " . $snmp->{$index}{user};
+    print WRITE " SHA \"" . $snmp->{$index}{auth_pass} . "\" AES \"" . $snmp->{$index}{priv_pass} . "\" ";
+    print WRITE $snmp->{$index}{ip} . "\n"; 
+      }
+    }
+  }
+  print WRITE "pass .1.3.6.1.4.1.18841 /acorn/perl/scripts/snmpAcorn.pl\n";
+
+  close( READ );
+  close( WRITE );
+  # Now copy the tmp file back to snmpdconf
+  move $tmp, $SNMPDCONF;
+  FLUSH_ETC();
+}
+
+#--------- snmptrap configuration ------------------------------
+# configure snmptrap receiver community and ip address
+sub snmptrap_useage
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  print "\n";
+  print "Usage: syscfg -s -u snmptrap [-o interactive] [-v \':<token>:[<token>:][<token>:]\']\n";
+  print "  -o interactive option will ask the user for input (menu mode)\n";
+  print "  -v strings begin and end with a \":\", and have one or more tokens\n";
+  print "  Valid tokens are:\n";
+  print "  STx    x = Enable or disable SNMP traps (1=enable,0=disable).\n";
+  print "  TRx    x = SNMP trap community string (for SNMPv2c).\n";
+  print "             community string may use character set in the range 0x21(!) to 0x7e(~)).\n";
+  print "             Characters not allowed are: backtick(\`),single quote('),comma(,),colon(:) and double quote(\").\n"; #PR-1846890
+  print "  IP,x,  x = trap host IP (IPv4 or IPv6 format)\n";
+  print "\n  Notes:\n";
+  print "\t- Leaving out TR token will set it to \"none\".\n";
+  print "\t- Configured IP hosts will receive both SNMPv2c and encrypted SNMPv3 traps.\n"; # Added for clarity
+  print "\n";
+  print "Usage: syscfg -r -u snmptrap \n";
+  print "\tDumps current SNMP trap config in above -v format\n";
+  exit $E_UNKNOWN;
+}
+
+sub snmptrap_show
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp, $opts ) = @_;
+  my $num_cfgd_snmp = 0;
+  my ($index, $sink_target, $user_target);    # Aricent PR 1362733 fix
+  if($DEBUG){print "snmptrap_show: Function Enter\n";}
+
+  #=========== Interactive ============
+  if( (defined $opts) && ($opts =~ /interactive/i) ){
+    print STDOUT "  Trap Community: \"$snmp->{comm}\"\n\n";
+    for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+      if( $snmp->{$index}{used} eq "yes" ) {
+    $num_cfgd_snmp++;
+    print STDOUT "  $num_cfgd_snmp) ";
+    print STDOUT "IPv" . $snmp->{$index}{IPv} . " ";
+    print STDOUT "IP: " . $snmp->{$index}{ip} . " ";
+    print STDOUT "\n";
+      }
+    }
+    if($num_cfgd_snmp) {
+      if( $DEBUG ) { print "Found $num_cfgd_snmp Trap Hosts\n"; }
+    } else {
+      print "\nNo Trap Hosts are configured on the system :\n\n";
+    }
+  } 
+  #=========== Extract specific trap host IP ============
+  elsif( (defined $opts) && ($opts =~ /sink(\d+)/i) ) {
+    if( $snmp->{state} == 1 ) {
+      $sink_target = $1;
+      for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+    if( $snmp->{$index}{used} eq "yes" ) {
+      if( $sink_target == 1 ) {
+        print STDOUT $snmp->{$index}{ip} . "\n";
+      }
+      $sink_target--;
+    }
+      }
+      # Indicate there are no more trap hosts
+      if( $sink_target >= 1) { print STDOUT "none\n"; }
+    } else { print STDOUT "none\n"; }
+  } 
+  # Aricent PR 1362733 fix - Start
+  elsif( (defined $opts) && ($opts =~ /user(\d+)/i) ) {
+    if( $snmp->{state} == 1 ) {
+      $user_target = $1;
+      for($index=1;$index<=$MAX_SNMP_USERS;$index++) {
+        if( $user_target == 1 ) {
+          # UPDATED: Print user, auth_pass, and priv_pass for encrypted trapsess support
+          print STDOUT $snmp->{$index}{user} . " " . $snmp->{$index}{auth_pass} . " " . $snmp->{$index}{priv_pass} . "\n";
+        }
+        $user_target--;
+      }
+      # Indicate there are no more trap users
+      if( $user_target >= 1) { print STDOUT "none none none\n"; }
+    } else { print STDOUT "none none none\n"; }
+  }
+  # Aricent PR 1362733 fix - End
+  #=========== Just return count of TrapHosts ============
+  elsif( (defined $opts) && ($opts =~ /justcnt/i) ) {
+    for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+      if( $snmp->{$index}{used} eq "yes" ) { $num_cfgd_snmp++; }
+    }
+  } 
+  #=========== Non-Interactive (single string) ============
+  else {
+    print STDOUT ":ST$snmp->{state}:";
+    print STDOUT "TR$snmp->{comm}:";
+    for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+      if( $snmp->{$index}{used} eq "yes" ) {
+    print STDOUT "IP,";
+    print STDOUT $snmp->{$index}{ip};
+    print STDOUT ",:";
+      }
+    }
+    print STDOUT "\n";
+  }
+  return $num_cfgd_snmp;
+}
+
+sub snmptrap_read
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp, $opts ) = @_;
+  my $num_cfgd_snmp = 0;
+  my $commented_out = 0;
+  my $index;
+  my $user_index = 1;    # Aricent PR 1362733 fix
+  # Initialize hash to all unused entries
+  for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+    # Aricent PR 1362733 fix - Start
+    $snmp->{$index}{used} = "no";
+    $snmp->{$index}{user} = "none";
+    $snmp->{$index}{auth_pass} = "none"; # UPDATED: Changed pass to auth_pass
+    $snmp->{$index}{priv_pass} = "none"; # UPDATED: Added priv_pass
+    # Aricent PR 1362733 fix - End
+  }
+  $snmp->{comm} = "none";
+  $snmp->{state} = 0;       # assume disabled for now
+
+  #----- Get config from file -----
+  $index = 1;
+  open(  READ, "< $SNMPDCONF" ) or return $NO_SUCH_FILE;
+  while (<READ>) {
+    # As of version 5.3.0.1, we use rwcommunity to setup v2c access
+    # Format: rwcommunity <community name> [<ip>|default]
+    # Note: default is equilavent to not specifying a server ip. In these
+    # cases requests form ANY ip are serviced.
+    #--- trap community (enabled)
+    if( $_ =~ /^(#?)trapcommunity\s+\"(\S+)\"\s*$/ ) {
+      if( $1 eq "#" ) { $commented_out++ };
+      $snmp->{comm} = $2;
+      if($DEBUG){print "snmptrap_read: found trap comm $2\n"; }
+    } 
+    #--- trap2sink
+    elsif( $_ =~ /^(#?)trap2sink\s+(\S+)\s*$/ ) {
+      $snmp->{$index}{ip}    = $2;
+      if( $snmp->{$index}{ip} =~ /($IPV4ADDFORMAT)/ ) {
+    $snmp->{$index}{ip} = $1;
+    $snmp->{$index}{IPv}    = 4;
+    $snmp->{$index}{used} = "yes";
+    if($DEBUG){print "snmptrap_read: found IPv4 trap sink $1\n"; }
+    $index++;
+      }
+      elsif( $snmp->{$index}{ip} =~ /($IPV6ADDFORMAT)/ ) {
+    $snmp->{$index}{ip} = $1;
+    $snmp->{$index}{IPv}    = 6;
+    $snmp->{$index}{used} = "yes";
+    if($DEBUG){print "snmptrap_read: found IPv6 trap sink $1\n"; }
+    $index++;
+      }
+      else {
+        print "Problem parsing trap2sink IP address in snmpd.conf\n";
+    return $NO_IP_FOUND;
+      }
+    }
+    # Aricent PR 1362733 fix - Start
+    # UPDATED REGEX: Now captures Auth password ($3) and Privacy password ($4)
+    elsif( $_ =~ /^(#?)createUser\s+(\S+)\s*SHA\s*\"(\S+)\"\s*AES\s*\"(\S+)\"/ ) {
+      $snmp->{$user_index}{user} = $2;
+      $snmp->{$user_index}{auth_pass} = $3;
+      $snmp->{$user_index}{priv_pass} = $4;
+      $user_index++;
+    }
+    # Aricent PR 1362733 fix - End 
+  }
+  close ( READ );
+
+  if($DEBUG){print "snmptrap_read: index $index\n"; }
+  if($DEBUG){print "snmptrap_read: commented_out $commented_out\n"; }
+
+  if( ($snmp->{comm} eq "none") || 
+      ($index == 1) ||
+      ($commented_out > 0) ) { 
+    $snmp->{state} = 0; 
+  } else { $snmp->{state} = 1; }
+
+  return $OK;
+}
+
+sub snmptrap_set
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ( $snmp, $opts, $string ) = @_;
+  if( $DEBUG ) { print "snmptrap_set: Function Enter\n"; }
+
+  #=========== Interactive ============
+  if( defined($opts) && ($opts =~ /interactive/) ) { 
+    my $rtn = "";
+    my $cnt = 0;    # index of last configured element
+
+    print "\nCurrent SNMP trap community is \"$snmp->{comm}\".\n";
+    print "Trap Community String (<cr> to keep, \"none\" to disable)\n";
+    $snmp->{comm} = 
+      ask_for_string("a value", $snmp->{comm});
+
+    if( $snmp->{comm} !~ /^[\!\#\@A-Za-z0-9_\-\?^&\{}\[\]%~=\$|\/<>;.+*(\)\\]+$/ ) { #PR-1846890
+      print "\nComm string may have character set from 0x21(!) to 0x7e(~), characters backtick (\`), single quote ('),comma(,),colon(:) and double quote (\") are not allowed. \n"; #PR-1846890
+      $snmp->{comm} = "none";
+    }
+
+    while ($rtn !~ /^quit/) {
+      # Find out how many trap hosts there are by displaying them.
+      $cnt = snmptrap_show( $snmp, $opts );
+      print "\nHow do you want to change trap hosts (add/del/quit) ? (<cr> to show): ";
+      chop ( $rtn = <STDIN> );
+      if ( $rtn =~ /add/ ) {
+    snmptrap_set_add($snmp, $cnt);
+      } elsif ( $rtn =~ /del/ ) {
+    if($cnt == 0) { print "Sorry, but there are no trap hosts configured\n" }
+    else { snmptrap_set_del($snmp, $cnt); }
+      }
+      print "\n\n";
+    }
+    $cnt = snmptrap_show( $snmp, "justcnt" );   # just to get the traphost count
+
+    #--- Figure out if traps are enabled
+    if(($snmp->{comm} ne "none") && ($cnt != 0)) { 
+      $snmp->{state} = 1; 
+    } else { $snmp->{state} = 0; }
+
+  } 
+  #=========== Non-Interactive (from string) ============
+  else {
+    my $index;
+    my $p_err = 0;
+    my $state = 0;
+
+    # UPDATED: Read existing config first to preserve User/Auth/Priv credentials
+    snmptrap_read($snmp, $opts);
+
+    # Initialize hash to all unused entries (while keeping User/Pass info from read)
+    for($index=1;$index<=$MAX_SNMP_USERS;$index++) { 
+      $snmp->{$index}{used} = "no"; 
+      # Ensure new fields are at least initialized if they weren't in the file
+      $snmp->{$index}{auth_pass} //= "none";
+      $snmp->{$index}{priv_pass} //= "none";
+    }
+    $snmp->{comm} = "none";
+    $snmp->{state} = 0;
+
+    $index = 1; # reset loop count
+    while( ($string ne ":") && ($p_err == 0) ) {
+      if($DEBUG){print STDOUT "---> String to parse: \"$string\"\n";}
+      #--- TR token
+      if( $string =~ s/^:TR([^:]+):/:/ )  { 
+    $snmp->{comm} = $1;
+    if($DEBUG){print "Parsed community string: $snmp->{comm}\n"; }
+      }
+      #--- ST token
+      elsif( $string =~ s/^:ST(\d+):/:/ ) { 
+    $state = $1; 
+    if($DEBUG){print "Parsed state: $state\n"; }
+      }
+      #--- IP token
+      elsif( $string =~ s/^:IP,([^,]+),:/:/ )  { 
+    $snmp->{$index}{ip}    = $1;
+    if( $snmp->{$index}{ip} =~ /($IPV4ADDFORMAT)/ ) {
+      $snmp->{$index}{ip}   = $1;
+      $snmp->{$index}{IPv}   = 4;
+      $snmp->{$index}{used} = "yes";
+      if($DEBUG){print "Parsed IPv4: $snmp->{$index}{ip}\n"; }
+      $index++;
+    }
+    elsif( $snmp->{$index}{ip} =~ /($IPV6ADDFORMAT)/ ) {
+      $snmp->{$index}{ip}   = $1;
+      $snmp->{$index}{IPv}   = 6;
+      $snmp->{$index}{used} = "yes";
+      if($DEBUG){print "Parsed IPv6: $snmp->{$index}{ip}\n"; }
+      $index++;
+    } 
+    else { $p_err = 1; print "Couldn't parse IP token\n"; }
+      } 
+      #--- default
+      else { $p_err = 1; print "Couldn't parse token\n"; }
+    }
+    if ( $p_err == 1 ) { snmptrap_useage(); }
+
+    if($DEBUG){print "snmptrap_set: index $index\n"; }
+    if($DEBUG){print "snmptrap_set: state $state\n"; }
+
+    #--- Figure out if traps are enabled
+    if( ($snmp->{comm} ne "none") && 
+    ($index != 1) && 
+    ($state == 1) ) { 
+      $snmp->{state} = 1; 
+    } else { $snmp->{state} = 0; }
+  }
+}
+
+sub snmptrap_set_add
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ($snmp, $num_cfgd_snmp) = @_ ;
+  my (@choices);
+  my $index = 1;
+  my $found_mt_idx = 0;
+  my ($sel);
+  if($DEBUG){print "snmptrap_set_add: Function Enter\n";}
+  if($num_cfgd_snmp >= $MAX_SNMP_USERS) {
+    print "$num_cfgd_snmp trap hosts are already configured on the system\n";
+    print "deletion of a trap host is required prior to addition of a new one \n";
+  } else {
+    $num_cfgd_snmp++;
+    # find the available slot in the snmp hash
+    while( ($index<=$MAX_SNMP_USERS) && ($found_mt_idx==0) ) {
+      if( $snmp->{$index}{used} eq "yes" ) { $index++; }
+      else { $found_mt_idx++; }
+    }
+    if($DEBUG){print "Free hash index: $index\n"; }
+    $snmp->{$index}{used} = "yes";
+
+    # UPDATED: Initialize SNMPv3 fields to "none" for the new entry
+    # This ensures consistency with the dual-password update
+    $snmp->{$index}{user}      = "none";
+    $snmp->{$index}{auth_pass} = "none";
+    $snmp->{$index}{priv_pass} = "none";
+
+    #----
+    @choices = ('IPv4','IPv6');
+    $sel = ask_for_choice(\@choices,$#choices);
+    $sel =~ /IPv(\d+)/;
+    $snmp->{$index}{IPv} = $1;
+    if($DEBUG){print "IPv: $snmp->{$index}{IPv}\n"; }
+
+    if( $snmp->{$index}{IPv} == 4 ) {
+      $sel = ask_for_ip("trap host (IPv4)");
+      $snmp->{$index}{ip} = $sel;
+    } else {
+      $sel = ask_for_ipv6_add("trap host (IPv6)");
+      $snmp->{$index}{ip} = $sel;
+    }
+  }
+}
+
+sub snmptrap_write
+{
+  my $fn = (caller(0))[3]; fen($fn);
+  my ($snmp) = @_ ;
+  my ($index);
+  my $tmp = "/tmp/foo";
+  if($DEBUG){print "snmptrap_write: Function Enter\n";}
+
+  # Flush all the old configs from snmpd.conf file
+  open( WRITE, "> $tmp" ) or return $NO_SUCH_FILE;
+  open( READ, "< $SNMPDCONF" ) or return $NO_SUCH_FILE;
+  while(<READ>) {
+    # UPDATED: Added trapsess to the flush list to clear old v3 trap sessions
+    if( ($_ =~ /trapcommunity/) ||
+    ($_ =~ /trap2sink/) ||
+    ($_ =~ /trapsess/) ) {
+    chomp($_);
+      if( $DEBUG ) { print "Deleting |$_| from file\n"; }
+    } else {
+      print WRITE "$_";
+    }
+  }
+
+  # Add new configs to end of snmpd.conf file
+  my $prefix = ($snmp->{state} == 0) ? "#" : ""; # Prefix with # if traps are disabled
+
+  if( $DEBUG ) { print "Writing Trap Community $snmp->{comm}\n"; }
+  print WRITE $prefix . "trapcommunity \"$snmp->{comm}\"\n";
+
+  for($index=1;$index<=$MAX_SNMP_USERS;$index++) {
+    if( $snmp->{$index}{used} eq "yes" ) {
+      if( $DEBUG ) { print "Writing Trapsink IP index # $index\n"; }
+      
+      # 1. Write the standard v2c trap sink
+      print WRITE $prefix . "trap2sink " . $snmp->{$index}{ip} . "\n";
+
+      # 2. Write the SNMPv3 trapsess (Encrypted)
+      # Only write if we have a valid user and both passwords
+      if ( ($snmp->{$index}{user} ne "none") && 
+           ($snmp->{$index}{auth_pass} ne "none") && 
+           ($snmp->{$index}{priv_pass} ne "none") ) {
+        
+        if( $DEBUG ) { print "Writing Trapsess for index # $index\n"; }
+        
+        # Format: trapsess -v 3 -u <user> -l authPriv -a SHA -A <auth> -x AES -X <priv> <ip>
+        print WRITE $prefix . "trapsess -v 3 -u " . $snmp->{$index}{user} . 
+                    " -l authPriv -a SHA -A \"" . $snmp->{$index}{auth_pass} . 
+                    "\" -x AES -X \"" . $snmp->{$index}{priv_pass} . "\" " . 
+                    $snmp->{$index}{ip} . "\n";
+      }
+    }
+  }
+
+  print WRITE "pass .1.3.6.1.4.1.18841 /acorn/perl/scripts/snmpAcorn.pl\n";
+
+  close( READ );
+  close( WRITE );
+
+  #--- Now copy the tmp file back to snmpdconf
+  move $tmp, $SNMPDCONF;
+  FLUSH_ETC();
+
+  #--- Notify CTP daemon of trap config changes
+  system("$CMD", "node", "cfg", "snmptraps");
+  system("/acorn/perl/scripts/trap_clock.pl set 2>/dev/null"); #PR-1846896 
+  return $OK;
+}
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+
+##trap_lock.pl
+
+#------------------------------------------------------------
+# Global variables
+#------------------------------------------------------------
+my $MAX_SNMP_USERS = 8;
+my $index = 1;
+my $trap_comm;
+my $trap_engine;
+my $system_clk;
+my @trap_hosts;
+my @trap_user;
+my @trap_pass;
+my @trap_priv_pass; # <--- ADDED THIS LINE
+my $user_string="none";
+
+sub load_snmp_config_once {
+    my $checksum = compute_config_checksum();
+    my $reload = 1;
+
+    if (-f $CACHE_FILE) {
+        my $cache = read_file_contents($CACHE_FILE);
+        if ($cache =~ /^checksum=(\w+)/m && $1 eq $checksum) {
+            # Cache hit
+            ($trap_comm) = ($cache =~ /^trap_comm=(.*)/m);
+            ($trap_engine) = ($cache =~ /^trap_engine=(.*)/m);
+            my ($host_str) = ($cache =~ /^trap_hosts=(.*)/m);
+            my ($user_str) = ($cache =~ /^trap_user=(.*)/m);
+            my ($pass_str) = ($cache =~ /^trap_pass=(.*)/m);
+            my ($priv_str) = ($cache =~ /^trap_priv_pass=(.*)/m); # <--- ADDED
+
+            ($IS_TRAP) = ($cache =~ /^is_trap=(\d+)/m);
+            ($IS_V2) = ($cache =~ /^is_v2=(\d+)/m);
+            ($IS_V3) = ($cache =~ /^is_v3=(\d+)/m);
+
+            my @host_arr = split /,/, $host_str;
+            my @user_arr = split /,/, $user_str;
+            my @pass_arr = split /,/, $pass_str;
+            my @priv_arr = split /,/, $priv_str; # <--- ADDED
+
+            for my $i (1 .. $MAX_SNMP_USERS) {
+                $trap_user[$i]      = $user_arr[$i - 1] // "none";
+                $trap_pass[$i]      = $pass_arr[$i - 1] // "none";
+                $trap_priv_pass[$i] = $priv_arr[$i - 1] // "none"; # <--- ADDED
+                $trap_hosts[$i]     = $host_arr[$i - 1] // "none";
+            }
+            $reload = 0;
+        }
+    }
+
+    if ($reload) {
+        # Evaluate IS_* values
+        $IS_TRAP = `$GREP "trapcommunity" $SNMPD_CONF | $GREP -v "#" | $WC -l | $AWK '{print \$1}'`;
+        $IS_V3   = `$GREP "createUser" $SNMPD_CONF | $GREP -v "#" | $WC -l | $AWK '{print \$1}'`;
+        $IS_V2   = `egrep '(rocommunity|rwcommunity)' $SNMPD_CONF | egrep -v "#" | $WC -l | $AWK '{print \$1}'`;
+        chomp($IS_TRAP); chomp($IS_V3); chomp($IS_V2);
+
+        # Defaults
+        $trap_comm = "none";
+        $trap_engine = "none";
+        for ($index = 1; $index <= $MAX_SNMP_USERS; $index++) {
+            $trap_hosts[$index]     = "none";
+            $trap_user[$index]      = "none";
+            $trap_pass[$index]      = "none";
+            $trap_priv_pass[$index] = "none"; # <--- ADDED
+        }
+
+        if (-f $SNMPD_CONF) {
+            $trap_comm = `$GREP "^trapcommunity" $SNMPD_CONF | $AWK '{ print \$2 }' | tail -1`;
+            chomp($trap_comm);
+            $trap_comm = "none" if $trap_comm eq "";
+        }
+
+        if (-f $VAR_SNMP_FILE) {
+            $trap_engine = `$GREP "^oldEngineID" $VAR_SNMP_FILE | $AWK '{ print \$2 }' | tail -1`;
+            chomp($trap_engine);
+            $trap_engine = "none" if $trap_engine eq "";
+        }
+
+        for ($index = 1; $index <= $MAX_SNMP_USERS; $index++) {
+            my $sink = `/acorn/perl/scripts/syscfg -r -u snmptrap -o sink$index 2>/dev/null`;
+            chomp($sink);   
+            $trap_hosts[$index] = ($sink ne '') ? $sink : 'none';
+        }
+
+        for ($index = 1; $index <= $MAX_SNMP_USERS; $index++) {
+            $user_string = `/acorn/perl/scripts/syscfg -r -u snmptrap -o user$index 2>/dev/null`;
+            chomp($user_string);
+            
+            # UPDATED: Split into 3 variables (user, auth_pass, priv_pass)
+            my ($u, $ap, $pp) = (split / /, $user_string)[0, 1, 2];
+            $trap_user[$index]      = $u  // "none";
+            $trap_pass[$index]      = $ap // "none";
+            $trap_priv_pass[$index] = $pp // "none"; # <--- ADDED
+        }
+
+        # Write to cache
+        my $cache_data = "checksum=$checksum\n";
+        $cache_data .= "trap_comm=$trap_comm\n";
+        $cache_data .= "trap_engine=$trap_engine\n";
+        $cache_data .= "trap_hosts=" . join(",", grep { defined $_ } @trap_hosts) . "\n";
+        $cache_data .= "trap_user="  . join(",", grep { defined $_ } @trap_user)  . "\n";
+        $cache_data .= "trap_pass="  . join(",", grep { defined $_ } @trap_pass)  . "\n";
+        $cache_data .= "trap_priv_pass=" . join(",", grep { defined $_ } @trap_priv_pass) . "\n"; # <--- ADDED
+        $cache_data .= "is_trap=$IS_TRAP\n";
+        $cache_data .= "is_v2=$IS_V2\n";
+        $cache_data .= "is_v3=$IS_V3\n";
+        write_file_contents($CACHE_FILE, $cache_data);
+    }
+}
+
+
+
+# ---- v3 trap ----
+        if ($IS_V3 != 0) {
+          for($user_string=1;$user_string<=$MAX_SNMP_USERS;$user_string++) {
+            if ($trap_user[$user_string] ne "none") {
+              if ( ($#ARGV == -1) ) {         # No parameters passed
+                $system_clk = `$DATE`; chomp($system_clk);
+                # UPDATED: Added -l authPriv and -X for Privacy Password
+                system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.23 1.3.6.1.4.1.18841.1.2.1.5.23 s \"Date/Time changed to $system_clk\"");
+                log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.23 1.3.6.1.4.1.18841.1.2.1.5.23 s \"Date/Time changed to $system_clk\"");
+
+              # ---------------
+              # NTP Status Trap
+              # ---------------
+              } elsif ((defined($ARGV[0])) && ($ARGV[0] eq "ntp")) {
+                if ((defined($ARGV[1])) && ($ARGV[1] == "0")) {
+                  $system_clk = `$DATE`; chomp($system_clk);
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: In Sync with NTP Server. Date/Time changed to $system_clk\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: In Sync with NTP Server. Date/Time changed to $system_clk\"");
+                } else {
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: Not in Sync with NTP Server\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.22 1.3.6.1.4.1.18841.1.2.1.5.22 s \"NTP Status: Not in Sync with NTP Server\"");
+                }
+
+              # -----------------------------------------------------
+              # Bundle add/disable/activate/delete/configuration trap
+              # -----------------------------------------------------
+              } elsif ((defined($ARGV[0])) && ($ARGV[0] eq "bndl")) {
+                if ((defined($ARGV[2])) && ($ARGV[2] eq "add")) {
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.16 1.3.6.1.4.1.18841.1.2.1.5.16 s \"Bundle $ARGV[1] Added\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.16 1.3.6.1.4.1.18841.1.2.1.5.16 s \"Bundle $ARGV[1] Added\"");
+                } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "dis")) {
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.17 1.3.6.1.4.1.18841.1.2.1.5.17 s \"Bundle $ARGV[1] status changed to Disable\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.17 1.3.6.1.4.1.18841.1.2.1.5.17 s \"Bundle $ARGV[1] status changed to Disable\"");
+                } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "act")) {
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.19 1.3.6.1.4.1.18841.1.2.1.5.19 s \"Bundle $ARGV[1] status changed to Activate\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.19 1.3.6.1.4.1.18841.1.2.1.5.19 s \"Bundle $ARGV[1] status changed to Activate\"");
+                } elsif ((defined($ARGV[2])) && ($ARGV[2] eq "del")) {
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.20 1.3.6.1.4.1.18841.1.2.1.5.20 s \"Bundle $ARGV[1] Deleted\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.20 1.3.6.1.4.1.18841.1.2.1.5.20 s \"Bundle $ARGV[1] Deleted\"");
+                } else {
+                  system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.18 1.3.6.1.4.1.18841.1.2.1.5.18 s \"Bundle $ARGV[1] configuration changed\"");
+                  log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.18 1.3.6.1.4.1.18841.1.2.1.5.18 s \"Bundle $ARGV[1] configuration changed\"");
+                }
+
+              # -----------------------------------------
+              # ----- NTP configuration change trap -----
+              # -----------------------------------------
+              } elsif (($ARGV[0] ne "set")) { 
+                system("/usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] \'\' 1.3.6.1.4.1.18841.1.2.1.6.0.21 1.3.6.1.4.1.18841.1.2.1.5.21 s \"NTP configuration changed: NTP state $ntp_state with SIP:$ARGV[0], KID:$ARGV[1], SS:$ARGV[2], S1IP:$ARGV[4], K1ID:$ARGV[5], SS1:$ARGV[6]\"");
+                log_it(1, "Trap: Sent node trap /usr/bin/snmptrap -e $trap_engine -v 3 -u $trap_user[$user_string] -l authPriv -a SHA -A $trap_pass[$user_string] -x AES -X $trap_priv_pass[$user_string] $trap_hosts[$index] '' 1.3.6.1.4.1.18841.1.2.1.6.0.21 1.3.6.1.4.1.18841.1.2.1.5.21 s \"NTP configuration changed: NTP state $ntp_state with SIP:$ARGV[0], KID:$ARGV[1], SS:$ARGV[2], S1IP:$ARGV[4], K1ID:$ARGV[5], SS1:$ARGV[6]\"");
+              }
+            }
+          }
+        }
+
+
+
+
