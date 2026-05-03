@@ -134,4 +134,67 @@ int ctp_trans_trap(void)
   return status;
 }
 
-    
+
+## final fix for this function
+
+//-------------------------------------------------------------------------
+// This function sends a trap
+//-------------------------------------------------------------------------
+int ctp_trans_trap(void)
+{
+  int i, j, status = SUCCESS;
+  FILE *fp;
+  char localCmdBuf[1024]; 
+  
+  FUNC_PRT(ctp_trans_trap, PF_TRAP, 0);
+
+  if( snmpTrapBufPtrTail != snmpTrapBufPtrHead ) {
+    snmpTrapBufPtrTail++;
+    snmpTrapBufPtrTail %= SNMP_TRAP_BUF_RING_SIZE;
+
+    for(i=0; i < CTP_MAX_TRAP_HOSTS; i++) {
+      if( strcmp(Ctp.Snmp.TrapHost[i], "none") != 0 ) {
+        
+        // --- SNMPv2c Logic ---
+        // FIX: Removed the restrictive TrapType check. 
+        // Now v2c fires if configured, perfectly matching trap_clock.pl
+        if (is_v2 != 0) {
+          sprintf(localCmdBuf, "/usr/bin/snmptrap -v 2c -c %s %s \'\' %s",
+                  Ctp.Snmp.TrapComm, Ctp.Snmp.TrapHost[i],
+                  &snmpTrapBuf[snmpTrapBufPtrTail][0]);
+          
+          PRTS(MAJ, Sent node trap (v2c):, localCmdBuf);
+          
+          fp = popen(localCmdBuf, "r");
+          if(fp) { pclose(fp); } else { status = FAILURE; }
+        }
+
+        // --- SNMPv3 Encrypted Logic ---
+        if (Ctp.Snmp.TrapType == 3) {
+          for(j=0; j < CTP_MAX_TRAP_HOSTS; j++) {
+            if (strcmp(Ctp.Snmp.TrapUser[j], "none") != 0) {
+              
+              sprintf(localCmdBuf, 
+                  "/usr/bin/snmptrap -e %s -v 3 -u %s -l authPriv -a SHA -A \"%s\" -x AES -X \"%s\" %s \'\' %s",
+                  Ctp.Snmp.TrapEngine, Ctp.Snmp.TrapUser[j],
+                  Ctp.Snmp.TrapPass[j], Ctp.Snmp.TrapPrivPass[j], 
+                  Ctp.Snmp.TrapHost[i], &snmpTrapBuf[snmpTrapBufPtrTail][0]);
+
+              PRTS(MAJ, Sent node trap (v3-Encrypted):, localCmdBuf);
+
+              fp = popen(localCmdBuf, "r");
+              if(!fp) {
+                PRTS(MAJ, ERROR: Could not open pipe for trap!, localCmdBuf);
+                status = FAILURE;
+              } else {
+                pclose(fp);
+              }
+            }
+          }
+        }
+      } else { break; } 
+    }
+    memset(&snmpTrapBuf[snmpTrapBufPtrTail][0], 0, SNMP_TRAP_BUF_SIZE);
+  }
+  return status;
+}
