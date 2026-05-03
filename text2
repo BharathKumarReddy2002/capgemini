@@ -899,5 +899,12 @@ May  3 17:02:52 ctp_141 ctpd: 7      util_prt_psc: te-0/0  B0 St Chg: EVAL to No
 May  3 17:02:52 ctp_141 kernel:EXT4-fs (sda7): re-mounted. Quota mode: none.
 May  3 17:02:55 ctp_141 ctpd: 7      util_prt_psc: te-0/0  B0 St Chg: NoSYNC to InSYNC
 May  3 17:02:56 ctp_141 ctpd: 7      util_prt_psc: te-0/0  B0 St Chg: InSYNC to RUNNING
+
+[root@ctp_141:/home/ctp_cmd 1]# syscfg -r -u snmpdconf
+:ST1:LO,Lab:CO,System_Administrator:USR,ro,2,4,acorn,default,:USR,rw,2,4,acornw,default,:USR,ro,3,user1,user1password,4,10.216.118.96,:SNMPv3_EID,D99IkKztRr:
+[root@ctp_141:/home/ctp_cmd 2]# syscfg -r -u snmptrap
+:ST1:TRacorn_trap:IP,10.0.0.0,:IP,10.216.118.96,:
+[root@ctp_141:/home/ctp_cmd 3]#
+
 May  3 17:03:00 ctp_141 kernel:EXT4-fs (sda7): re-mounted. Quota mode: none.
 
